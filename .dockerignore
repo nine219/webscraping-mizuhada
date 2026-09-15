@@ -1,0 +1,12 @@
+node_modules
+dashboard/node_modules
+dashboard/.next
+.next
+logs
+.git
+.env.local
+.env
+*.log
+.claude
+tests
+**/*.tsbuildinfo

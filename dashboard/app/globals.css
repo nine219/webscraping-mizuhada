@@ -1,0 +1,832 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Modern neutral palette with subtle warmth */
+  --bg-base: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-hover: #f1f5f9;
+  --bg-sidebar: #0f172a;
+  --bg-sidebar-hover: #1e293b;
+  --bg-sidebar-active: #334155;
+  /* Sidebar is a permanent dark rail (never swaps with the app's own
+     light/dark theme), so these were previously hardcoded #fff / rgba(255..)
+     literals in sidebar.tsx — pulled into variables for consistency with the
+     rest of the CSS-variable convention, not because the value needs to
+     change per-theme. */
+  --text-sidebar: rgba(255, 255, 255, 0.75);
+  --text-sidebar-active: #ffffff;
+  --text-sidebar-muted: rgba(255, 255, 255, 0.4);
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f8fafc;
+  
+  /* Refined accent colors */
+  --accent-primary: #3b82f6;
+  --accent-primary-light: #60a5fa;
+  --accent-primary-dark: #2563eb;
+  --accent-primary-subtle: #eff6ff;
+  --accent-success: #10b981;
+  --accent-success-subtle: #ecfdf5;
+  --accent-warning: #f59e0b;
+  --accent-warning-subtle: #fffbeb;
+  --accent-danger: #ef4444;
+  --accent-danger-subtle: #fef2f2;
+  --accent-info: #6366f1;
+  --accent-info-subtle: #eef2ff;
+
+  /* Sentiment palette (marketing dashboards) */
+  --sentiment-positive: #10b981;
+  --sentiment-positive-bg: #ecfdf5;
+  --sentiment-negative: #ef4444;
+  --sentiment-negative-bg: #fef2f2;
+  --sentiment-neutral: #94a3b8;
+  --sentiment-neutral-bg: #f1f5f9;
+
+  /* Crisis risk levels */
+  --risk-low: #10b981;
+  --risk-low-bg: #ecfdf5;
+  --risk-medium: #f59e0b;
+  --risk-medium-bg: #fffbeb;
+  --risk-high: #ef4444;
+  --risk-high-bg: #fef2f2;
+
+  /* Viral view signature duotone — a deliberate, restrained nod to TikTok's
+     own brand colors (cyan/magenta), used ONLY as a decorative glow/gradient
+     on the Viral surface (card hover, hero headline). Never repurposed as a
+     semantic color — "Spike" stays --accent-danger red everywhere, including
+     inside the Viral view, so meaning stays consistent app-wide. This pair
+     exists purely to make the one "what's blowing up right now" surface feel
+     a little more alive than the calmer, denser table pages around it. */
+  --viral-cyan: #25f4ee;
+  --viral-magenta: #fe2c55;
+  --viral-glow: 0 0 0 1px rgba(37, 244, 238, 0.35), 0 12px 28px -10px rgba(254, 44, 85, 0.4);
+
+  /* Text colors with better contrast */
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --text-muted: #94a3b8;
+  --text-placeholder: #cbd5e1;
+  --text-on-dark: #f8fafc;
+  --text-on-dark-muted: #94a3b8;
+  
+  /* Border colors */
+  --border: #e2e8f0;
+  --border-light: #f1f5f9;
+  --border-strong: #cbd5e1;
+  
+  /* Shadows - more subtle and layered */
+  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.06), 0 1px 2px -1px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.06), 0 4px 6px -4px rgba(0, 0, 0, 0.03);
+  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.06), 0 8px 10px -6px rgba(0, 0, 0, 0.03);
+  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.03);
+  
+  /* Typography */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+  
+  /* Z-index scale */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-drawer: 300;
+  --z-modal: 400;
+  --z-popover: 500;
+  --z-toast: 600;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  line-height: 1.5;
+  min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-muted); }
+
+/* ===== Text/bg/border utilities =====
+   Replace the hundreds of inline `style={{ color: 'var(--text-muted)' }}`
+   one-off objects that used to be hand-written per element. Not Tailwind's
+   `text-{color}` utilities — tailwind.config.ts's color palette has drifted
+   out of sync with these CSS vars (different hex values for the same names)
+   and is unused elsewhere in the app, so reusing it here would silently
+   change rendered colors. These plain classes reference the same vars every
+   inline style already pointed at, so nothing visually changes. */
+.text-muted     { color: var(--text-muted); }
+.text-primary   { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.bg-base        { background: var(--bg-base); }
+.border-b-light { border-bottom: 1px solid var(--border-light); }
+.border-t-light { border-top: 1px solid var(--border-light); }
+
+/* ===== Modern Card ===== */
+.card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+.card-hover:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+/* ===== Data Table Modern ===== */
+.data-table { 
+  width: 100%; 
+  border-collapse: separate; 
+  border-spacing: 0;
+  font-size: 13px; 
+}
+.data-table th {
+  text-align: left;
+  padding: 12px 16px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  background: var(--bg-base);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  transition: color 0.15s ease;
+}
+.data-table th:hover { color: var(--text-secondary); }
+.data-table th.sortable::after {
+  content: '';
+  display: inline-block;
+  width: 0; 
+  height: 0;
+  margin-left: 6px;
+  vertical-align: middle;
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
+  border-top: 3px solid var(--text-muted);
+  opacity: 0.4;
+  transition: opacity 0.15s ease;
+}
+.data-table th.sortable:hover::after { opacity: 0.8; }
+.data-table th.sort-asc::after {
+  border-top: none;
+  border-bottom: 3px solid var(--accent-primary);
+  opacity: 1;
+}
+.data-table th.sort-desc::after {
+  border-top: 3px solid var(--accent-primary);
+  opacity: 1;
+}
+.data-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  transition: background 0.15s ease;
+}
+.data-table tbody tr:hover td { background: var(--bg-base); }
+.data-table tbody tr:last-child td { border-bottom: none; }
+.data-table tbody tr { cursor: pointer; }
+.data-table .brand-cell { font-weight: 600; color: var(--text-primary); }
+.data-table .price { font-family: var(--font-mono); font-weight: 500; }
+.data-table .price-highlight { color: var(--accent-primary-dark); font-weight: 600; }
+.data-table .gap { font-family: var(--font-mono); font-weight: 600; }
+.data-table .gap.negative { color: var(--accent-success); }
+.data-table .gap.positive { color: var(--accent-danger); }
+
+/* ===== Tags Modern ===== */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+.tag-red { background: var(--accent-danger-subtle); color: var(--accent-danger); border: 1px solid #fecaca; }
+.tag-green { background: var(--accent-success-subtle); color: var(--accent-success); border: 1px solid #a7f3d0; }
+.tag-blue { background: var(--accent-primary-subtle); color: var(--accent-primary-dark); border: 1px solid #bfdbfe; }
+.tag-amber { background: var(--accent-warning-subtle); color: #b45309; border: 1px solid #fde68a; }
+.tag-purple { background: var(--accent-info-subtle); color: var(--accent-info); border: 1px solid #c7d2fe; }
+.tag-gray { background: var(--bg-subtle); color: var(--text-secondary); border: 1px solid var(--border); }
+
+/* ===== Buttons ===== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+.btn:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+  border-color: var(--border-strong);
+}
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-primary {
+  background: var(--accent-primary);
+  color: #fff;
+  border-color: var(--accent-primary);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-primary-dark);
+  border-color: var(--accent-primary-dark);
+}
+
+.btn-danger {
+  background: var(--accent-danger);
+  color: #fff;
+  border-color: var(--accent-danger);
+}
+.btn-danger:hover:not(:disabled) {
+  filter: brightness(0.9);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-xs { padding: 4px 8px; font-size: 11px; }
+
+/* ===== Live indicator ===== */
+.live-indicator { 
+  display: inline-flex; 
+  align-items: center; 
+  gap: 6px; 
+  font-size: 12px; 
+  font-weight: 600; 
+  color: var(--accent-success); 
+}
+.live-dot { 
+  width: 6px; 
+  height: 6px; 
+  background: var(--accent-success); 
+  border-radius: 50%; 
+  animation: pulse 2s ease-in-out infinite; 
+}
+
+/* ===== Toggle ===== */
+.toggle { position: relative; width: 36px; height: 20px; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-track { position: absolute; inset: 0; background: var(--border); border-radius: 20px; transition: background 0.2s; }
+.toggle input:checked + .toggle-track { background: var(--accent-primary); }
+.toggle-thumb { position: absolute; width: 14px; height: 14px; background: #fff; border-radius: 50%; top: 3px; left: 3px; transition: transform 0.2s; box-shadow: var(--shadow-sm); }
+.toggle input:checked ~ .toggle-thumb { transform: translateX(16px); }
+
+/* ===== Feed timeline ===== */
+.feed-timeline { position: relative; padding-left: 28px; }
+.feed-timeline::before { content: ''; position: absolute; left: 9px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
+.feed-dot { position: absolute; left: -23px; top: 14px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--bg-surface); background: var(--text-muted); }
+.feed-dot.price-drop { background: var(--accent-danger); }
+.feed-dot.price-up   { background: var(--accent-warning); }
+.feed-dot.new-product { background: var(--accent-primary); }
+.feed-dot.promo      { background: var(--accent-success); }
+
+/* ===== Progress bars ===== */
+.progress-bar {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--border-light);
+  overflow: hidden;
+}
+.progress-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ===== Stat cards ===== */
+.stat-value {
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.stat-meta {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ===== Section headers ===== */
+.section-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.section-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+/* ===== Page header ===== */
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 28px;
+}
+.page-header-title {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+}
+.page-header-subtitle {
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* ===== Competitor card ===== */
+.competitor-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px;
+  transition: all 0.2s ease;
+}
+.competitor-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+/* ===== Engagement metric ===== */
+.engagement-metric {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
+  font-size: 13px;
+}
+.engagement-metric-value {
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.engagement-metric-label {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ===== Comparison row ===== */
+.comparison-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+.comparison-row:last-child { border-bottom: none; }
+.comparison-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+/* ===== Drawer / Modal overlay ===== */
+.drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: var(--z-drawer);
+  animation: fadeIn 0.2s ease;
+}
+.drawer {
+  position: fixed;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 480px;
+  max-width: 100%;
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-xl);
+  z-index: calc(var(--z-drawer) + 1);
+  animation: slideInRight 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow-y: auto;
+}
+
+/* ===== Glass popover — small inline editors (e.g. manual sentiment/topic
+   override) anchored to a trigger element. True frosted-glass translucency,
+   unlike .modal-glass below which is deliberately solid. ===== */
+.glass-popover {
+  z-index: var(--z-popover);
+  background: rgba(255, 255, 255, 0.65);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 14px;
+  box-shadow:
+    0 12px 32px -8px rgba(15, 23, 42, 0.25),
+    0 4px 12px -4px rgba(15, 23, 42, 0.1);
+  padding: 10px;
+  animation: scaleIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.glass-popover select {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 8px;
+  padding: 5px 8px;
+  font-size: 11px;
+  color: var(--text-primary);
+  outline: none;
+}
+.glass-popover select:focus {
+  border-color: var(--accent-primary);
+}
+
+/* ===== Glass modal (centered popup, e.g. Add/Edit Brand) — soft fintech-card style:
+   crisp solid-white card (not see-through), generous rounding, a diffused
+   colour-tinted shadow standing in for depth instead of blur/translucency. ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(148, 163, 184, 0.35);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  animation: fadeIn 0.15s ease;
+}
+.modal-glass {
+  position: relative;
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.04);
+  border-radius: 28px;
+  box-shadow:
+    0 30px 60px -15px rgba(99, 102, 241, 0.25),
+    0 12px 24px -8px rgba(15, 23, 42, 0.1);
+  animation: scaleIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.96) translateY(4px); opacity: 0; }
+  to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+
+/* ===== Search input ===== */
+.search-input {
+  width: 100%;
+  padding: 8px 12px 8px 36px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  transition: all 0.15s ease;
+}
+.search-input:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+.search-input::placeholder { color: var(--text-placeholder); }
+
+/* ===== Select / Dropdown ===== */
+.select {
+  padding: 8px 32px 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  transition: all 0.15s ease;
+}
+.select:focus {
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+}
+
+/* ===== Chat typing indicator ===== */
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); opacity: 0.4; }
+  40% { transform: translateY(-6px); opacity: 1; }
+}
+.typing-dot { width: 6px; height: 6px; background: var(--text-muted); border-radius: 50%; animation: bounce 1.2s ease-in-out infinite; }
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+@keyframes slideInUp {
+  from { transform: translateY(10px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.animate-fade-in { animation: fadeIn 0.3s ease; }
+.animate-slide-up { animation: slideInUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* ===== Filter pills ===== */
+.filter-pill {
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+.filter-pill:hover {
+  border-color: var(--border-strong);
+  color: var(--text-primary);
+}
+.filter-pill.active {
+  background: var(--accent-primary);
+  color: #fff;
+  border-color: var(--accent-primary);
+}
+
+/* ===== KPI Grid ===== */
+.kpi-grid {
+  display: grid;
+  gap: 16px;
+}
+
+/* ===== Responsive helpers ===== */
+
+/* CSS Grid items default to min-width:auto, which means they refuse to
+   shrink below their content's natural width (e.g. a Chart.js canvas or a
+   wide table) even when the grid track itself wants to shrink. That's what
+   was blowing out every fractional grid (`2fr 1fr` chart+sidebar layouts)
+   at narrower viewports and cascading overflow all the way up to <html>.
+   min-width:0 lets them actually shrink to fit. (Not applied to .card
+   itself — many cards hold absolutely-positioned overlays like chart
+   tooltips that need to be able to extend past the card's own box.) */
+.grid > * {
+  min-width: 0;
+}
+
+/* Same default applies to flex items — a flex row (e.g. a comment card's
+   platform badge + author + sentiment tag + urgency badge, all in one row)
+   won't shrink below its content's natural width without this, so nested
+   flex rows kept overflowing their card even after the grid fix above let
+   the card itself shrink. This only changes behavior when a row genuinely
+   doesn't have enough room; rows that already fit are unaffected. */
+.flex > * {
+  min-width: 0;
+}
+
+@media (max-width: 768px) {
+  .page-header { flex-direction: column; gap: 16px; }
+  .stat-value { font-size: 24px; }
+}
+
+/* ===== Sidebar (mobile) =====
+   The fixed 260px sidebar (sidebar.tsx) + hardcoded marginLeft:260 on the
+   main content (layout.tsx) had no mobile fallback at all — on a phone that
+   leaves ~115px for actual content. Below 768px the sidebar becomes an
+   off-canvas drawer (translateX, toggled by the hamburger button the
+   sidebar renders itself) instead of a permanent column. */
+.main-content { margin-left: 260px; }
+
+/* ===== Two/three-column section grids (mobile) =====
+   Several page sections (Overview's Insight Feed + Executive Digest, post
+   detail pages' content+sidebar split, campaign form field pairs, etc.) set
+   their column ratio via inline `style={{gridTemplateColumns}}` rather than
+   a Tailwind grid-cols-N class — the existing grid-cols-N breakpoint rules
+   above don't touch these, so they stayed a fixed 2-3 columns at any width.
+   .grid > * { min-width: 0 } (below) lets each column keep shrinking instead
+   of overflowing, which is what actually produced the "squeezed into
+   unreadable slivers" look on a phone rather than a clean overflow. An
+   inline style can only be beaten by !important or a higher-specificity
+   inline style, so this is the one place in the app that genuinely needs it. */
+@media (max-width: 900px) {
+  .grid-2col { grid-template-columns: 1fr !important; }
+}
+.sidebar-toggle { display: none; }
+.sidebar-backdrop { display: none; }
+@media (max-width: 768px) {
+  .sidebar-toggle { display: flex; }
+  .sidebar {
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+  .sidebar.sidebar-open { transform: translateX(0); }
+  .main-content { margin-left: 0; }
+  /* Room for the fixed hamburger button (top:12/left:12, 40px) so it
+     doesn't sit on top of the topbar's own title text. */
+  .topbar { padding-left: 60px; }
+  .sidebar-backdrop.open {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 49;
+  }
+}
+
+/* KPI/stat-tile rows across the app hardcode grid-cols-3 through grid-cols-6
+   (Tailwind utility classes) with no responsive variant. min-width:0 above
+   lets those tiles shrink, but past a point a label like "Positive" just
+   can't fit in a ~70px-wide card without wrapping into unreadable slivers.
+   Reduce the column count instead of letting tiles shrink indefinitely —
+   cascades after Tailwind's own utilities so it wins without !important. */
+@media (max-width: 900px) {
+  .grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 560px) {
+  .grid-cols-2, .grid-cols-3, .grid-cols-4, .grid-cols-5, .grid-cols-6 {
+    grid-template-columns: repeat(1, minmax(0, 1fr));
+  }
+}
+
+/* ===== Badge row =====
+   Consistent horizontal grouping wherever multiple badges/chips sit
+   together (Spike + Shop + Ambassador + Other-brand, etc.) — used by
+   dashboard/components/badges.tsx callers so the gap/wrap/alignment is
+   identical everywhere instead of each call site reinventing flex props. */
+.badge-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ===== Viral card (TikTok → Viral tab) =====
+   Distinct hover treatment from plain .card-hover: a glow using the
+   cyan/magenta duotone above instead of a plain shadow, plus a touch more
+   lift. Reserved for the Viral view's card grid — signals "this is the
+   kinetic, live surface" without touching how .card behaves anywhere else. */
+.viral-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.25s ease, border-color 0.25s ease;
+}
+.viral-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(37, 244, 238, 0.45);
+  box-shadow: var(--viral-glow);
+}
+
+.viral-media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #0f172a;
+}
+.viral-media video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+.viral-media video.is-playing { opacity: 1; }
+
+.viral-media-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.viral-media-initial {
+  font-family: var(--font-sans);
+  font-weight: 800;
+  font-size: 88px;
+  line-height: 1;
+  color: rgba(255, 255, 255, 0.08);
+  letter-spacing: -0.02em;
+  user-select: none;
+}
+.viral-play-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 23, 42, 0.18);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.viral-card:hover .viral-play-hint { opacity: 1; }
+
+/* Big view-count overlay on the media area — video-platform vernacular
+   (the number viewers actually scan for first), not a generic stat tile. */
+.viral-view-count {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.01em;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+.viral-view-count .unit {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+/* Hero headline number — the one deliberate use of the duotone as a text
+   fill (see --viral-cyan/--viral-magenta above). Kept to a single element
+   so it reads as a signature, not decoration sprayed everywhere. */
+.viral-count-gradient {
+  background: linear-gradient(90deg, var(--viral-cyan), var(--viral-magenta));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}

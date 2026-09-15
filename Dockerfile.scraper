@@ -1,0 +1,49 @@
+# Scraper image — shared by scraper-tiktok / -instagram / -twitter / -xhs.
+# Playwright base ships a version-matched Chromium + all its system libs. The
+# scrapers run headless:false for anti-detection, rendered to a virtual
+# framebuffer (see scraper-run.sh). This image installs REAL google-chrome-stable
+# and sets CHROME_PATH to it (below) — not Playwright's bundled "Chrome for
+# Testing", which XHS's anti-bot rejects.
+FROM mcr.microsoft.com/playwright:v1.60.0-jammy
+
+WORKDIR /app
+
+# xvfb → virtual display for non-headless Chrome. x11vnc → attach for the
+# interactive `<platform>:login` flow (login image variant / `docker compose
+# run`). Fonts: noto-cjk for XHS/Chinese, tlwg for Thai, plus emoji + liberation
+# — missing fonts both break rendering AND are a fingerprint signal.
+# noninteractive + preset TZ so the tzdata pulled in by the font/x11 packages
+# doesn't stop the build on its "Geographic area:" prompt (reads stdin forever).
+ENV DEBIAN_FRONTEND=noninteractive TZ=Asia/Bangkok
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      xvfb x11vnc novnc websockify wget gnupg ca-certificates \
+      fonts-noto-cjk fonts-noto-color-emoji fonts-thai-tlwg fonts-liberation \
+    && rm -rf /var/lib/apt/lists/*
+
+# Real branded google-chrome-stable — replaces Playwright's "Chrome for Testing"
+# build, whose automation-channel signals XHS's anti-bot rejects (host uses real
+# Chrome and works; see docker_antibot_finding memory). findChrome() honors
+# CHROME_PATH, so this makes every scraper launch real Chrome.
+RUN wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+      | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+ && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+      > /etc/apt/sources.list.d/google-chrome.list \
+ && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+ && rm -rf /var/lib/apt/lists/*
+ENV CHROME_PATH=/usr/bin/google-chrome-stable
+
+# Install ALL deps (ts-node/typescript live in devDependencies). Playwright's
+# own browser download is skipped — the base image already provides Chromium.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+COPY package*.json ./
+RUN npm ci --include=dev
+
+COPY tsconfig.json ./
+COPY src ./src
+COPY docker ./docker
+RUN chmod +x docker/scraper-login.sh docker/scraper-run.sh
+
+# Explicit Xvfb (1920x1080x24 = realistic desktop framebuffer; the tiny default
+# is a bot signal) via scraper-run.sh — see that script for why not xvfb-run.
+# SCHEDULER_ROLE / SCRAPER_PLATFORM are set per-service in compose.
+CMD ["docker/scraper-run.sh"]

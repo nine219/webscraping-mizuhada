@@ -1,0 +1,21 @@
+# Backend image — shared by the `api` and `scheduler-core` services.
+# No browser: these never launch Playwright after the Docker split (scraping
+# runs in the scraper-<platform> containers), so skip the Chromium download to
+# keep the image small. ts-node runtime, no build step (matches package.json).
+FROM node:20-bookworm-slim
+
+WORKDIR /app
+ENV NODE_ENV=production \
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+# Install ALL deps (ts-node/typescript are devDependencies but needed at
+# runtime here) — override the NODE_ENV=production default that would skip them.
+COPY package*.json ./
+RUN npm ci --include=dev
+
+COPY tsconfig.json ./
+COPY src ./src
+
+# Default command is the API; scheduler-core overrides `command:` in compose.
+# Env (SOCIAL_DATABASE_URL etc.) comes from compose, not a baked .env file.
+CMD ["node", "-r", "ts-node/register", "src/api/server.ts"]

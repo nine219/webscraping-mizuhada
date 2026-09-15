@@ -1,0 +1,6 @@
+# Shell scripts + Dockerfiles run in Linux containers — force LF so a checkout
+# on Windows (autocrlf) can't turn the shebang into `#!/usr/bin/env bash\r` and
+# break the container at runtime/build.
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+docker/**       text eol=lf

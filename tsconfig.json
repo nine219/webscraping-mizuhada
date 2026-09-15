@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "baseUrl": ".",
+    "paths": {
+      "@db/*": ["src/db/*"],
+      "@scrapers/*": ["src/scrapers/*"],
+      "@validators/*": ["src/validators/*"],
+      "@analysis/*": ["src/analysis/*"],
+      "@alerts/*": ["src/alerts/*"],
+      "@rag/*": ["src/rag/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "dashboard"]
+}

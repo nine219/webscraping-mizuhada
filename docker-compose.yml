@@ -1,0 +1,208 @@
+services:
+  social-db:
+    image: timescale/timescaledb-ha:pg15-latest
+    container_name: mizuhada-social-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mizuhada_social
+      POSTGRES_USER: mizuhada
+      POSTGRES_PASSWORD: 12345
+    ports:
+      - "5433:5432"
+    volumes:
+      - social-postgres-data:/home/postgres/pgdata/data
+      - ./src/db/schema-social.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    shm_size: 256mb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mizuhada -d mizuhada_social"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - mizuhada-net
+
+  # ── Python captcha solver (Flask + ddddocr + opencv) ───────────────────
+  captcha-solver:
+    build: ./captcha-solver
+    container_name: mizuhada-captcha
+    restart: unless-stopped
+    environment:
+      CAPTCHA_SOLVER_HOST: 0.0.0.0   # bind all interfaces so scrapers can reach it
+    networks:
+      - mizuhada-net
+
+  # ── Express API (:3001) ────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: mizuhada-api
+    restart: unless-stopped
+    env_file: .env.local              # GEMINI_API_KEY, LINE_*, API key, etc.
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      API_PORT: "3001"
+    ports:
+      - "3001:3001"
+    depends_on:
+      social-db:
+        condition: service_healthy
+    networks:
+      - mizuhada-net
+
+  # ── Core (browser-less) scheduler — sentiment/theme/digests/cleanup/etc ─
+  scheduler-core:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: mizuhada-scheduler-core
+    restart: unless-stopped
+    command: ["node", "-r", "ts-node/register", "src/scheduler/cron.ts"]
+    env_file: .env.local
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      SCHEDULER_ROLE: core
+    depends_on:
+      social-db:
+        condition: service_healthy
+    networks:
+      - mizuhada-net
+
+  # ── Next.js dashboard (:3000) ──────────────────────────────────────────
+  dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+      args:
+        # Compose does NOT auto-load .env.local for ${...} interpolation (only
+        # a project-root file literally named .env gets that) — build with
+        # NEXT_PUBLIC_API_KEY exported in the shell, or
+        # `docker compose --env-file .env.local build dashboard`.
+        NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY}
+    container_name: mizuhada-dashboard
+    restart: unless-stopped
+    environment:
+      # Server-side rewrite target — reach the api container by service name.
+      API_INTERNAL_URL: http://api:3001
+      PORT: "3000"
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+    networks:
+      - mizuhada-net
+
+  # ── Per-platform scraper containers (Phase 2+) ─────────────────────────
+  # Not part of the Phase 1 "safe layer" bring-up — start these one at a time
+  # (`docker compose up -d scraper-xhs`) as each platform is piloted. Each runs
+  # its own platform's cron + the queue worker, headless:false under Xvfb,
+  # against its own persistent profile volume.
+  scraper-xhs:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: mizuhada-scraper-xhs
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      CAPTCHA_SOLVER_URL: http://captcha-solver:5001
+      XHS_CAPTCHA_SOLVER: http://captcha-solver:5001
+      SCHEDULER_ROLE: scraper
+      SCRAPER_PLATFORM: xhs
+    volumes:
+      - xhs-profile:/root/.xhs-scraper-profile
+    depends_on:
+      social-db:
+        condition: service_healthy
+      captcha-solver:
+        condition: service_started
+    networks:
+      - mizuhada-net
+
+  scraper-tiktok:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: mizuhada-scraper-tiktok
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      CAPTCHA_SOLVER_URL: http://captcha-solver:5001
+      SCHEDULER_ROLE: scraper
+      SCRAPER_PLATFORM: tiktok
+    ports:
+      # noVNC — watch/drive this container's Chrome for a 'login' job.
+      # localhost-only: this is a no-password VNC server, full remote control
+      # of a live logged-in session, run persistently as long as the
+      # container is up — not something to expose beyond this machine.
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - tiktok-profile:/root/.tiktok-scraper-profile
+    depends_on:
+      social-db:
+        condition: service_healthy
+      captcha-solver:
+        condition: service_started
+    networks:
+      - mizuhada-net
+
+  scraper-instagram:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: mizuhada-scraper-instagram
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      SCHEDULER_ROLE: scraper
+      SCRAPER_PLATFORM: instagram
+    ports:
+      - "127.0.0.1:6081:6080"
+    volumes:
+      - instagram-profile:/root/.instagram-scraper-profile
+    depends_on:
+      social-db:
+        condition: service_healthy
+    networks:
+      - mizuhada-net
+
+  scraper-twitter:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: mizuhada-scraper-twitter
+    restart: unless-stopped
+    env_file: .env.local
+    environment:
+      SOCIAL_DATABASE_URL: postgres://mizuhada:12345@social-db:5432/mizuhada_social
+      SCHEDULER_ROLE: scraper
+      SCRAPER_PLATFORM: twitter
+    ports:
+      - "127.0.0.1:6082:6080"
+    volumes:
+      - twitter-profile:/root/.twitter-scraper-profile
+    depends_on:
+      social-db:
+        condition: service_healthy
+    networks:
+      - mizuhada-net
+
+networks:
+  mizuhada-net:
+    driver: bridge
+
+volumes:
+  social-postgres-data:
+  # Per-platform persistent Chrome login profiles (Phase 2+). Each scraper
+  # container mounts exactly one at /root/.<platform>-scraper-profile. Named
+  # volumes (not host binds) — Linux container Chrome cannot reuse a Windows
+  # profile, and the /mnt/c WSL2 bridge breaks Chrome's singleton lock.
+  tiktok-profile:
+  instagram-profile:
+  twitter-profile:
+  xhs-profile:

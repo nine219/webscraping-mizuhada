@@ -1,0 +1,45 @@
+# Environment
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+dashboard/node_modules/
+
+# Build output
+dist/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# TypeScript
+*.tsbuildinfo
+
+# Docker volumes
+postgres-data/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
+CLAUDE.md
+
+*/__pycache__
+
+# Ad-hoc CSV exports — src/tools/xhs-raw-export.ts writes one per run at repo
+# root; Settings → Alerts CSV export downloads client-side (not a repo file)
+*.csv
+slide
+
+# Database dumps and runtime logs
+*.dump
+logs/
