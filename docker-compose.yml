@@ -80,6 +80,9 @@ services:
         # NEXT_PUBLIC_API_KEY exported in the shell, or
         # `docker compose --env-file .env.local build dashboard`.
         NEXT_PUBLIC_API_KEY: ${NEXT_PUBLIC_API_KEY}
+        # Empty = browser calls relative /api/* on whatever origin served the
+        # page (e.g. an ngrok tunnel on :3000 only) — see dashboard/Dockerfile.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
     container_name: mizuhada-dashboard
     restart: unless-stopped
     environment:

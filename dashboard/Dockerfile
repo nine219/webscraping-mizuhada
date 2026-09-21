@@ -19,6 +19,13 @@ ENV API_INTERNAL_URL=$API_INTERNAL_URL
 # API_KEY is set, and the browser has no other way to know what value to send.
 ARG NEXT_PUBLIC_API_KEY=""
 ENV NEXT_PUBLIC_API_KEY=$NEXT_PUBLIC_API_KEY
+# Browser-side API base URL — also inlined at build time. Leave empty to make
+# the browser call relative "/api/*" paths on whatever origin served the page
+# (e.g. an ngrok tunnel on :3000), which next.config.mjs's rewrite then proxies
+# server-side to the real api container. Set to a full URL only if the browser
+# should hit the API directly on its own exposed port instead.
+ARG NEXT_PUBLIC_API_URL=""
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 RUN npm run build
 
 FROM node:20-bookworm-slim AS runtime
