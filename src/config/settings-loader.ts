@@ -94,6 +94,7 @@ export interface ScheduleSettings {
   cleanup: ScheduleEntry;
   morningDigest: ScheduleEntry;
   weeklyDigest: ScheduleEntry;
+  tiktokSpikeDigest: ScheduleEntry;
 }
 
 export interface AppSettings {
@@ -169,6 +170,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     cleanup:       { enabled: true, label: 'Social DB cleanup',         cron: '0 3 * * *' },
     morningDigest: { enabled: true, label: 'LINE morning digest',       cron: '0 7 * * *' },
     weeklyDigest:  { enabled: true, label: 'Weekly digest',             cron: '0 8 * * 1' },
+    tiktokSpikeDigest: { enabled: true, label: 'TikTok daily top-5 spike digest', cron: '0 18 * * *' },
   },
   ai: {
     provider: 'gemini',

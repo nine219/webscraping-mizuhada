@@ -59,6 +59,7 @@ export interface ScheduleSettings {
   cleanup: ScheduleEntry;
   morningDigest: ScheduleEntry;
   weeklyDigest: ScheduleEntry;
+  tiktokSpikeDigest: ScheduleEntry;
 }
 
 export interface AppSettings {

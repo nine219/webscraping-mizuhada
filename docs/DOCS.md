@@ -291,7 +291,7 @@ checkNegativeSentimentSpikes() — right after classification
 detectSpikes()/detectTwitterSpikes() — after scrapes / stats refresh
            ↓
 LINE: spike alerts, urgent-negative alerts, morning digest (07:00),
-      weekly digest (Mon 08:00), 4h scrape summary
+      weekly digest (Mon 08:00), TikTok top-5 spike digest (18:00)
 ```
 
 Every post table keeps the full raw API response in `raw_data JSONB` for audit/replay/backfill (e.g. `author_followers` backfilled from `raw_data->'authorStats'` after the column was added).
@@ -306,7 +306,7 @@ Source: `src/scheduler/cron.ts`. All times Asia/Bangkok. Cron expressions come f
 |---|---|---|---|
 | Every 2h, on the hour | `0 */2 * * *` | Sentiment (XHS translate → classify 100 → negative-spike check) | `sentiment` |
 | Daily 01:15/07:15/13:15/19:15 (~6h) | `15 1,7,13,19 * * *` | TikTok feed → feed comments | `tiktok` (+ `feed-comments`) |
-| Every 4h, on the hour | `0 */4 * * *` | TikTok search → theme classification → scrape summary | `tiktok` |
+| Every 4h, on the hour | `0 */4 * * *` | TikTok search → theme classification | `tiktok` |
 | Mondays 05:40 | `40 5 * * 1` | TikTok watchlist/spike stats refresh | `tiktok` |
 | Daily 03:30/09:30/15:30/21:30 (6h) | `30 3,9,15,21 * * *` | Instagram feed + comments | `instagram` |
 | Daily 02:10/08:10/14:10/20:10 (6h) | `10 2,8,14,20 * * *` | XHS feed → search → comments (sequential, shared profile) | `xhs` |
@@ -317,6 +317,7 @@ Source: `src/scheduler/cron.ts`. All times Asia/Bangkok. Cron expressions come f
 | Daily 03:00 | `0 3 * * *` | `runSocialCleanup()` — purge > 6 months | — |
 | Daily 07:00 | `0 7 * * *` | LINE morning digest | `morning-digest` |
 | Mondays 08:00 | `0 8 * * 1` | LINE weekly digest | — |
+| Daily 18:00 | `0 18 * * *` | LINE TikTok top-5 spike digest (DB-only; sends nothing if none spiked today) | `tiktok-spike-digest` |
 
 **XHS is not manual-only** — real cron above, only in `scraper-xhs` host process (`wantXhs`, gated on role). Never ran under the legacy all-in-one scheduler. Still triggerable on demand via the job queue.
 
@@ -553,7 +554,7 @@ Two client stacks, one usage ledger:
 
 **`comments.ts`** — noise filters: `NOISE_PATTERNS`, `isNoiseComment`, `isEmojiOnly`, `isMentionOnly`, `shouldKeepComment` (scrape-time), `noiseExcludeSql(column)` (query-time).
 
-**`scrape-summary.ts`** — `sendScrapeSummary(label, runStartedAt)`: LINE summary of posts with `first_seen_at >= runStartedAt`.
+**`tiktok-spike-digest.ts`** — `sendTikTokDailySpikeDigest()`: daily 18:00 LINE roundup of the day's top 5 spiked TikTok posts (own brands), any post age, gated on `spike_detected_at` falling today. Sends nothing on a quiet day.
 
 **`campaign-report.ts`** — `getCampaignReport(id)`: engagement, sentiment split, reply/quote counts (`npm run report:campaign`).
 

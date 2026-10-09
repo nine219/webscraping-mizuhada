@@ -7,6 +7,7 @@ import { checkNegativeSentimentSpikes, detectTwitterSpikes } from '../analysis/s
 import { runSocialCleanup } from '../db/social-client';
 import { sendMorningDigest } from '../analysis/morning-digest';
 import { sendWeeklyDigest } from '../analysis/weekly-digest';
+import { sendTikTokDailySpikeDigest } from '../analysis/tiktok-spike-digest';
 import { createNotification } from '../notifications/store';
 
 // ── Overlap guard ─────────────────────────────────────────────────────────────
@@ -166,16 +167,11 @@ if (wantTikTok) cron.schedule(cronOf('tiktokFeed', '15 1,7,13,19 * * *'), () => 
 if (wantTikTok) cron.schedule(cronOf('tiktokSearch', '0 */4 * * *'), () => {
   ifEnabled('tiktokSearch', async () => {
     createNotification({ type: 'schedule', title: 'TikTok search scrape started', body: 'Scheduled 4-hour UGC search is running.', payload: { job: 'tiktok-search' } }).catch(() => {});
-    const runStartedAt = Date.now();
     await withLock('tiktok', async () => {                  // shared with feed — same Chrome profile
       const { searchAllBrands } = await import('../scrapers/tiktok/tiktok-search');
       await searchAllBrands();
       // Post theme classification moved to its own core (non-browser) cron so
       // the scraper-tiktok container doesn't need Gemini creds — see below.
-      const { sendScrapeSummary } = await import('../analysis/scrape-summary');
-      await sendScrapeSummary('TikTok search (4h)', runStartedAt).catch((e) =>
-        console.error('[Cron] scrape summary error:', e)
-      );
     });
   }).catch((e) => console.error('[Cron] tiktok-search error:', e));
 }, {
@@ -336,6 +332,20 @@ if (wantCore) cron.schedule(cronOf('morningDigest', '0 7 * * *'), () => {
     createNotification({ type: 'schedule', title: 'LINE morning digest started', body: 'Scheduled morning digest is running.', payload: { job: 'morning-digest' } }).catch(() => {});
     await withLock('morning-digest', sendMorningDigest);
   }).catch((e) => console.error('[Cron] morning digest error:', e));
+}, {
+  timezone: 'Asia/Bangkok',
+});
+
+// Daily 18:00 Bangkok — LINE roundup of today's top 5 spiked TikTok posts
+// (own brands). Any post age qualifies — gated on spike_detected_at falling
+// today, not posted_at — unlike the real-time spike alert in tiktok-search.ts/
+// tiktok-feed.ts (fires the moment a spike is found). DB-only, no Chrome, so
+// this runs in scheduler-core like the other digests, not the scraper-tiktok
+// container. Sends nothing on a quiet day (see tiktok-spike-digest.ts).
+if (wantCore) cron.schedule(cronOf('tiktokSpikeDigest', '0 18 * * *'), () => {
+  ifEnabled('tiktokSpikeDigest', async () => {
+    await withLock('tiktok-spike-digest', sendTikTokDailySpikeDigest);
+  }).catch((e) => console.error('[Cron] tiktok spike digest error:', e));
 }, {
   timezone: 'Asia/Bangkok',
 });
