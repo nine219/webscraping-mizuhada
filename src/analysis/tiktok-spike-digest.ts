@@ -22,11 +22,13 @@ const RANK_MEDALS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
 
 /**
  * Daily 18:00 LINE summary of the day's spiked TikTok posts (own brands) —
- * any post age qualifies, the only filter is spike_detected_at falling on
- * today's Bangkok calendar date. Separate from the real-time spike alert
- * (spike-detection.ts's spikeBubble, fired the moment a spike is found) —
- * this is the end-of-day roundup, capped at the top 5 by views.
- * Sends nothing if no post spiked today — a quiet day shouldn't page anyone.
+ * any post age qualifies, the only filter is last_alert_at falling on today's
+ * Bangkok calendar date (covers both a fresh spike and a same-day resurgence
+ * on an older post — see the query comment below). Separate from the
+ * real-time spike alert (spike-detection.ts's spikeBubble, fired the moment a
+ * spike is found) — this is the end-of-day roundup, capped at the top 5 by
+ * views. Sends nothing if no post spiked today — a quiet day shouldn't page
+ * anyone.
  */
 export async function sendTikTokDailySpikeDigest(): Promise<void> {
   const rows = await socialQuery<SpikedRow>(
@@ -40,7 +42,13 @@ export async function sendTikTokDailySpikeDigest(): Promise<void> {
             ) AS post_url
      FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
      WHERE b.type = 'own' AND tp.spike_flag = true
-       AND (tp.spike_detected_at AT TIME ZONE 'Asia/Bangkok')::date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
+       -- last_alert_at covers both an initial spike (set alongside
+       -- spike_detected_at the moment it's first flagged) AND a same-day
+       -- resurgence on an older post (detectResurgence() only ever touches
+       -- last_alert_at/last_alert_views, never spike_detected_at) — filtering
+       -- on spike_detected_at alone would miss resurgences on posts that
+       -- first spiked on an earlier day.
+       AND (tp.last_alert_at AT TIME ZONE 'Asia/Bangkok')::date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
      ORDER BY tp.views DESC
      LIMIT ${TOP_N}`,
   );
