@@ -1,253 +1,238 @@
 import { socialQuery } from '../db/social-client';
-import { Flex, FLEX_COLORS as C, fmtCompact as fmt, truncateText as truncate, kpiTile, sentimentBar, deltaBadge, platformColor, platformAccentBar } from '../alerts/line';
+import { getOfficialTiktokHandles, nonOfficialTiktokSql } from './spike-detection';
+import { Flex, FLEX_COLORS as C, fmtCompact as fmt, truncateText as truncate, kpiTile, sentimentBar, deltaBadge, platformColor } from '../alerts/line';
 
-export interface BrandDigest {
-  name: string;
-  ownPosts: number;
-  ownViews: number;
-  ownLikes: number;
-  ugcMentions: number;
-  ugcViews: number;
-  prevUgcMentions: number;
-  sentiment: { positive: number; negative: number; neutral: number; question: number };
-  topPost: { caption: string; views: number; likes: number; post_url: string; author: string | null; isUgc: boolean } | null;
-  spikeCount: number;
-  // X activity for this brand, clustered separately in brandBubble() — null when
-  // the brand isn't X-scoped (docs/scope-x-campaigns.md decision 10: MizuMi only).
-  twitter: PlatformStats | null;
-}
+// Shared by the morning (07:00, since yesterday 00:00) and weekly (Mon 08:00,
+// last 7 days) LINE digests. Carousel order, built by the callers:
+//   Needs Attention (U4–U5 negatives) → Ride the Wave (Top 5 spiked by
+//   engagement, UGC only) → Performance (cross-brand KPIs) → one bubble per
+//   brand (MizuMi, Bomi, Gentle Colors) with KPIs + Top 5 posts.
+//
+// `winStart`/`priorStart` are constant SQL timestamp expressions picked by the
+// caller — no user input, safe to interpolate.
 
-export interface PlatformStats {
-  posts: number;
-  views: number;
-  likes: number;
-  sentiment: { positive: number; negative: number; neutral: number; question: number };
-  topPost: { caption: string; views: number; likes: number; post_url: string; author: string | null } | null;
-  spikeCount: number;
-}
+export interface SentimentCounts { positive: number; negative: number; neutral: number; question: number }
 
-/** X/Twitter equivalent of the TikTok stats block below — twitter_posts + social_comments(platform='twitter'). */
-export async function fetchTwitterStats(brandId: number, winStart: string): Promise<PlatformStats> {
-  const [postsRes, sentimentRes, topPostRes, spikeRes] = await Promise.all([
-    socialQuery<{ post_count: string; total_views: string; total_likes: string }>(
-      `SELECT COUNT(*)::text AS post_count, COALESCE(SUM(views),0)::text AS total_views,
-              COALESCE(SUM(likes),0)::text AS total_likes
-       FROM twitter_posts
-       WHERE brand_id = $1 AND posted_at >= ${winStart}`,
-      [brandId],
-    ),
-    socialQuery<{ sentiment: string; cnt: string }>(
-      `SELECT sentiment, COUNT(*)::text AS cnt
-       FROM social_comments
-       WHERE brand_id = $1 AND platform = 'twitter'
-         AND published_at >= ${winStart}
-         AND sentiment IS NOT NULL
-       GROUP BY sentiment`,
-      [brandId],
-    ),
-    socialQuery<{ caption: string; views: string; likes: string; post_url: string; author_handle: string | null }>(
-      `SELECT COALESCE(caption,'') AS caption, views::text, likes::text,
-              COALESCE(NULLIF(post_url,''), '') AS post_url, author_handle
-       FROM twitter_posts
-       WHERE brand_id = $1 AND posted_at >= ${winStart}
-       ORDER BY views DESC LIMIT 1`,
-      [brandId],
-    ),
-    socialQuery<{ cnt: string }>(
-      `SELECT COUNT(*)::text AS cnt
-       FROM twitter_posts
-       WHERE brand_id = $1 AND spike_flag = true
-         AND spike_detected_at >= ${winStart}`,
-      [brandId],
-    ),
-  ]);
+export interface TagCount { tag: string; cnt: number }
 
-  const p = postsRes[0];
-  const sentiment = { positive: 0, negative: 0, neutral: 0, question: 0 };
-  for (const row of sentimentRes) {
-    const s = row.sentiment as keyof typeof sentiment;
-    if (s in sentiment) sentiment[s] = parseInt(row.cnt, 10);
-  }
-  const tp = topPostRes[0];
-
-  return {
-    posts: parseInt(p.post_count, 10),
-    views: parseInt(p.total_views, 10),
-    likes: parseInt(p.total_likes, 10),
-    sentiment,
-    topPost: tp && parseInt(tp.views, 10) > 0
-      ? { caption: tp.caption, views: parseInt(tp.views, 10), likes: parseInt(tp.likes, 10), post_url: tp.post_url, author: tp.author_handle }
-      : null,
-    spikeCount: parseInt(spikeRes[0]?.cnt ?? '0', 10),
-  };
-}
-
-/**
- * `winStart`/`priorStart` are constant SQL timestamp expressions (Bangkok-based) —
- * no user input, safe to interpolate. Callers pick the window (1 day for the
- * morning digest, 7 days for the weekly digest).
- */
-export async function fetchBrandDigest(
-  brandId: number,
-  brandName: string,
-  winStart: string,
-  priorStart: string,
-  brandSlug?: string,
-): Promise<BrandDigest> {
-  const [ownRes, ugcRes, prevUgcRes, sentimentRes, topPostRes, spikeRes, twitter] = await Promise.all([
-    socialQuery<{ post_count: string; total_views: string; total_likes: string }>(
-      `SELECT COUNT(*)::text AS post_count, COALESCE(SUM(views),0)::text AS total_views,
-              COALESCE(SUM(likes),0)::text AS total_likes
-       FROM tiktok_posts
-       WHERE brand_id = $1 AND source_type = 'feed'
-         AND posted_at >= ${winStart}`,
-      [brandId],
-    ),
-    socialQuery<{ post_count: string; total_views: string }>(
-      `SELECT COUNT(*)::text AS post_count, COALESCE(SUM(views),0)::text AS total_views
-       FROM tiktok_posts
-       WHERE brand_id = $1 AND source_type = 'search'
-         AND posted_at >= ${winStart}`,
-      [brandId],
-    ),
-    socialQuery<{ post_count: string }>(
-      `SELECT COUNT(*)::text AS post_count
-       FROM tiktok_posts
-       WHERE brand_id = $1 AND source_type = 'search'
-         AND posted_at >= ${priorStart} AND posted_at < ${winStart}`,
-      [brandId],
-    ),
-    socialQuery<{ sentiment: string; cnt: string }>(
-      `SELECT sentiment, COUNT(*)::text AS cnt
-       FROM social_comments
-       WHERE brand_id = $1
-         AND published_at >= ${winStart}
-         AND sentiment IS NOT NULL
-       GROUP BY sentiment`,
-      [brandId],
-    ),
-    socialQuery<{ caption: string; views: string; likes: string; post_url: string; author_handle: string | null; source_type: string }>(
-      `SELECT COALESCE(tp.caption,'') AS caption, tp.views::text, tp.likes::text,
-              COALESCE(
-                NULLIF(tp.post_url, ''),
-                CASE WHEN b.tiktok_handle IS NOT NULL OR tp.author_handle IS NOT NULL
-                  THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
-                  ELSE '' END
-              ) AS post_url,
-              tp.author_handle, tp.source_type
-       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
-       WHERE tp.brand_id = $1
-         AND tp.posted_at >= ${winStart}
-       ORDER BY tp.views DESC LIMIT 1`,
-      [brandId],
-    ),
-    socialQuery<{ cnt: string }>(
-      `SELECT COUNT(*)::text AS cnt
-       FROM tiktok_posts
-       WHERE brand_id = $1 AND spike_flag = true
-         AND spike_detected_at >= ${winStart}`,
-      [brandId],
-    ),
-    brandSlug === 'mizumi' ? fetchTwitterStats(brandId, winStart) : Promise.resolve(null),
-  ]);
-
-  const own = ownRes[0];
-  const ugc = ugcRes[0];
-  const sentiment = { positive: 0, negative: 0, neutral: 0, question: 0 };
-  for (const row of sentimentRes) {
-    const s = row.sentiment as keyof typeof sentiment;
-    if (s in sentiment) sentiment[s] = parseInt(row.cnt, 10);
-  }
-  const tp = topPostRes[0];
-
-  return {
-    name: brandName,
-    ownPosts: parseInt(own.post_count, 10),
-    ownViews: parseInt(own.total_views, 10),
-    ownLikes: parseInt(own.total_likes, 10),
-    ugcMentions: parseInt(ugc.post_count, 10),
-    ugcViews: parseInt(ugc.total_views, 10),
-    prevUgcMentions: parseInt(prevUgcRes[0]?.post_count ?? '0', 10),
-    sentiment,
-    topPost: tp
-      ? {
-          caption: tp.caption, views: parseInt(tp.views, 10), likes: parseInt(tp.likes, 10),
-          post_url: tp.post_url, author: tp.author_handle, isUgc: tp.source_type === 'search',
-        }
-      : null,
-    spikeCount: parseInt(spikeRes[0]?.cnt ?? '0', 10),
-    twitter,
-  };
-}
-
-export async function fetchTopHashtags(winStart: string): Promise<{ tag: string; cnt: number }[]> {
-  const rows = await socialQuery<{ hashtag: string; cnt: string }>(
-    `SELECT hashtag, COUNT(*)::text AS cnt
-     FROM (
-       SELECT unnest(hashtags) AS hashtag FROM tiktok_posts
-       WHERE posted_at >= ${winStart} AND hashtags IS NOT NULL
-     ) sub
-     GROUP BY hashtag ORDER BY COUNT(*) DESC LIMIT 5`,
-    [],
-  );
-  return rows.map((r) => ({ tag: r.hashtag, cnt: parseInt(r.cnt, 10) }));
-}
-
-export interface TopPost {
+export interface DigestPost {
   brand_name: string;
   platform: string;
   caption: string;
   views: number;
   likes: number;
-  post_url: string;
+  engagementRate: number | null;
+  post_url: string | null;
   author: string | null;
-  isUgc: boolean;
+  isOfficial: boolean;
 }
 
-/** Cross-brand, cross-platform (TikTok + X) top N posts by views, for the Performance section. */
-export async function fetchTopPosts(winStart: string, limit = 5): Promise<TopPost[]> {
-  const rows = await socialQuery<{
-    brand_name: string; platform: string; caption: string; views: string; likes: string;
-    post_url: string; author_handle: string | null; source_type: string;
-  }>(
-    `SELECT * FROM (
-       SELECT b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
-              tp.views::text, tp.likes::text,
-              COALESCE(
-                NULLIF(tp.post_url, ''),
-                CASE WHEN b.tiktok_handle IS NOT NULL OR tp.author_handle IS NOT NULL
-                  THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
-                  ELSE '' END
-              ) AS post_url,
-              tp.author_handle, tp.source_type
-       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
-       WHERE b.type = 'own' AND tp.posted_at >= ${winStart}
-       UNION ALL
-       SELECT b.name AS brand_name, 'twitter' AS platform, COALESCE(twp.caption,'') AS caption,
-              twp.views::text, twp.likes::text,
-              COALESCE(
-                NULLIF(twp.post_url, ''),
-                CASE WHEN b.twitter_handle IS NOT NULL OR twp.author_handle IS NOT NULL
-                  THEN 'https://x.com/' || COALESCE(NULLIF(twp.author_handle,''), b.twitter_handle) || '/status/' || twp.post_id
-                  ELSE '' END
-              ) AS post_url,
-              twp.author_handle, 'feed' AS source_type
-       FROM twitter_posts twp JOIN brands b ON b.id = twp.brand_id
-       WHERE b.slug = 'mizumi' AND twp.posted_at >= ${winStart}
-     ) sub
-     ORDER BY views::bigint DESC LIMIT $1`,
-    [limit],
+export interface BrandDigest {
+  name: string;
+  slug: string;
+  posts: number;
+  ugc: number;
+  official: number;
+  views: number;
+  prevUgc: number;
+  postsByPlatform: Record<string, number>;
+  sentiment: SentimentCounts;
+  hashtags: TagCount[];
+  topPosts: DigestPost[];
+  spikeCount: number;
+}
+
+export interface DigestBrand { id: number; name: string; slug: string }
+
+export interface DigestData {
+  brands: BrandDigest[];
+  hashtags: TagCount[];
+}
+
+const BRAND_ORDER = ['mizumi', 'bomi', 'gentle-colors'];
+const TOP_N = 5;
+
+const TIKTOK_URL_SQL = `COALESCE(
+  NULLIF(tp.post_url, ''),
+  CASE WHEN b.tiktok_handle IS NOT NULL OR tp.author_handle IS NOT NULL
+    THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
+    ELSE NULL END)`;
+
+const X_URL_SQL = `COALESCE(
+  NULLIF(twp.post_url, ''),
+  CASE WHEN b.twitter_handle IS NOT NULL OR twp.author_handle IS NOT NULL
+    THEN 'https://x.com/' || COALESCE(NULLIF(twp.author_handle,''), b.twitter_handle) || '/status/' || twp.post_id
+    ELSE NULL END)`;
+
+/** Own brands in digest order: MizuMi, Bomi, Gentle Colors, then any others by name. */
+export async function fetchDigestBrands(): Promise<DigestBrand[]> {
+  const rows = await socialQuery<{ id: string; name: string; slug: string }>(
+    `SELECT id::text, name, slug FROM brands WHERE type = 'own'`,
   );
-  return rows.map((r) => ({
+  const rank = (slug: string) => {
+    const i = BRAND_ORDER.indexOf(slug);
+    return i === -1 ? BRAND_ORDER.length : i;
+  };
+  return rows
+    .map((r) => ({ id: parseInt(r.id, 10), name: r.name, slug: r.slug }))
+    .sort((a, b) => rank(a.slug) - rank(b.slug) || a.name.localeCompare(b.name));
+}
+
+interface PostRow {
+  brand_id: number; brand_name: string; platform: string; caption: string;
+  views: string | null; likes: string | null; engagement_rate: string | null;
+  hashtags: string[] | null; author_handle: string | null; post_url: string | null; is_official: boolean;
+}
+
+function toDigestPost(r: Omit<PostRow, 'brand_id' | 'hashtags'>): DigestPost {
+  return {
     brand_name: r.brand_name,
     platform: r.platform,
     caption: r.caption,
-    views: parseInt(r.views, 10),
-    likes: parseInt(r.likes, 10),
+    views: parseInt(r.views ?? '0', 10) || 0,
+    likes: parseInt(r.likes ?? '0', 10) || 0,
+    engagementRate: r.engagement_rate != null ? parseFloat(r.engagement_rate) : null,
     post_url: r.post_url,
     author: r.author_handle,
-    isUgc: r.source_type === 'search',
-  }));
+    isOfficial: r.is_official,
+  };
+}
+
+/** Count hashtags by number of posts using them — strips '#', case-insensitive, keeps first-seen spelling. */
+function countHashtags(posts: { hashtags: string[] | null }[], limit = TOP_N): TagCount[] {
+  const counts = new Map<string, TagCount>();
+  for (const p of posts) {
+    const seen = new Set<string>();
+    for (const raw of p.hashtags ?? []) {
+      const tag = raw.trim().replace(/^#+/, '');
+      const key = tag.toLowerCase();
+      if (!tag || seen.has(key)) continue;
+      seen.add(key);
+      const cur = counts.get(key);
+      if (cur) cur.cnt++;
+      else counts.set(key, { tag, cnt: 1 });
+    }
+  }
+  return [...counts.values()].sort((a, b) => b.cnt - a.cnt).slice(0, limit);
+}
+
+/**
+ * Every own-brand post (TikTok, plus X for MizuMi — docs/scope-x-campaigns.md
+ * decision 10) posted in the window, aggregated per brand: post / UGC /
+ * official counts, views, comment sentiment (all platforms), hashtags, Top 5
+ * posts by views. Official = TikTok feed rows or an own handle found via
+ * search (same rule as the spike alerts); X official = source_type 'feed'.
+ */
+export async function fetchDigestData(brands: DigestBrand[], winStart: string, priorStart: string): Promise<DigestData> {
+  const ids = brands.map((b) => b.id);
+  const handles = await getOfficialTiktokHandles();
+
+  const [posts, sentimentRows, prevUgcRows, spikeRows] = await Promise.all([
+    socialQuery<PostRow>(
+      `SELECT tp.brand_id, b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
+              tp.views::text, tp.likes::text, tp.engagement_rate::text, tp.hashtags, tp.author_handle,
+              ${TIKTOK_URL_SQL} AS post_url,
+              NOT COALESCE(${nonOfficialTiktokSql('tp', '$2')}, false) AS is_official
+       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
+       WHERE tp.brand_id = ANY($1::int[]) AND tp.posted_at >= ${winStart}
+       UNION ALL
+       SELECT twp.brand_id, b.name, 'twitter', COALESCE(twp.caption,''),
+              twp.views::text, twp.likes::text, twp.engagement_rate::text, twp.hashtags, twp.author_handle,
+              ${X_URL_SQL},
+              COALESCE(twp.source_type, 'feed') <> 'search'
+       FROM twitter_posts twp JOIN brands b ON b.id = twp.brand_id
+       WHERE twp.brand_id = ANY($1::int[]) AND b.slug = 'mizumi' AND twp.posted_at >= ${winStart}`,
+      [ids, handles],
+    ),
+    socialQuery<{ brand_id: number; sentiment: string; cnt: string }>(
+      `SELECT brand_id, sentiment, COUNT(*)::text AS cnt
+       FROM social_comments
+       WHERE brand_id = ANY($1::int[]) AND published_at >= ${winStart} AND sentiment IS NOT NULL
+       GROUP BY brand_id, sentiment`,
+      [ids],
+    ),
+    socialQuery<{ brand_id: number; cnt: string }>(
+      `SELECT tp.brand_id, COUNT(*)::text AS cnt
+       FROM tiktok_posts tp
+       WHERE tp.brand_id = ANY($1::int[]) AND tp.posted_at >= ${priorStart} AND tp.posted_at < ${winStart}
+         AND ${nonOfficialTiktokSql('tp', '$2')}
+       GROUP BY tp.brand_id`,
+      [ids, handles],
+    ),
+    socialQuery<{ brand_id: number; cnt: string }>(
+      `SELECT tp.brand_id, COUNT(*)::text AS cnt
+       FROM tiktok_posts tp
+       WHERE tp.brand_id = ANY($1::int[]) AND tp.spike_flag = true AND tp.spike_detected_at >= ${winStart}
+         AND ${nonOfficialTiktokSql('tp', '$2')}
+       GROUP BY tp.brand_id`,
+      [ids, handles],
+    ),
+  ]);
+
+  const countFor = (rows: { brand_id: number; cnt: string }[], id: number) =>
+    parseInt(rows.find((r) => r.brand_id === id)?.cnt ?? '0', 10);
+
+  const digests = brands.map((b): BrandDigest => {
+    const mine = posts.filter((p) => p.brand_id === b.id);
+    const official = mine.filter((p) => p.is_official).length;
+    const sentiment: SentimentCounts = { positive: 0, negative: 0, neutral: 0, question: 0 };
+    for (const r of sentimentRows) {
+      if (r.brand_id !== b.id) continue;
+      const s = r.sentiment as keyof SentimentCounts;
+      if (s in sentiment) sentiment[s] = parseInt(r.cnt, 10);
+    }
+    const postsByPlatform: Record<string, number> = {};
+    for (const p of mine) postsByPlatform[p.platform] = (postsByPlatform[p.platform] ?? 0) + 1;
+
+    const digestPosts = mine.map(toDigestPost);
+    return {
+      name: b.name,
+      slug: b.slug,
+      posts: mine.length,
+      ugc: mine.length - official,
+      official,
+      views: digestPosts.reduce((s, p) => s + p.views, 0),
+      prevUgc: countFor(prevUgcRows, b.id),
+      postsByPlatform,
+      sentiment,
+      hashtags: countHashtags(mine),
+      topPosts: [...digestPosts].sort((x, y) => y.views - x.views).slice(0, TOP_N),
+      spikeCount: countFor(spikeRows, b.id),
+    };
+  });
+
+  return { brands: digests, hashtags: countHashtags(posts) };
+}
+
+/**
+ * "Ride the Wave" — own-brand UGC posts that spiked (newly flagged, or a
+ * resurgence alert) within the window, any brand, ranked by engagement rate.
+ * Official-account posts excluded (same rule as the real-time spike alerts).
+ */
+export async function fetchRideTheWave(winStart: string, limit = TOP_N): Promise<DigestPost[]> {
+  const handles = await getOfficialTiktokHandles();
+  const rows = await socialQuery<Omit<PostRow, 'brand_id' | 'hashtags'>>(
+    `SELECT brand_name, platform, caption, views::text, likes::text, engagement_rate::text, author_handle, post_url, is_official
+     FROM (
+       SELECT b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
+              tp.views, tp.likes, tp.engagement_rate, tp.author_handle, ${TIKTOK_URL_SQL} AS post_url, false AS is_official
+       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
+       WHERE b.type = 'own' AND tp.spike_flag = true
+         AND (tp.spike_detected_at >= ${winStart} OR tp.last_alert_at >= ${winStart})
+         AND ${nonOfficialTiktokSql('tp', '$2')}
+       UNION ALL
+       SELECT b.name, 'twitter', COALESCE(twp.caption,''),
+              twp.views, twp.likes, twp.engagement_rate, twp.author_handle, ${X_URL_SQL}, false
+       FROM twitter_posts twp JOIN brands b ON b.id = twp.brand_id
+       WHERE b.slug = 'mizumi' AND twp.spike_flag = true AND twp.spike_detected_at >= ${winStart}
+         AND twp.source_type = 'search'
+     ) sub
+     -- sub.-qualified so these sort the numeric source columns, not the ::text outputs
+     ORDER BY sub.engagement_rate DESC NULLS LAST, sub.views DESC NULLS LAST
+     LIMIT $1`,
+    [limit, handles],
+  );
+  return rows.map(toDigestPost);
 }
 
 export interface UrgentDigestComment {
@@ -287,44 +272,6 @@ export async function fetchUrgentComments(winStart: string, limit = 6): Promise<
   });
 }
 
-export interface DigestSpikePost {
-  brand_name: string;
-  platform: string;
-  caption: string;
-  views: number;
-  post_url: string | null;
-}
-
-/** Own-brand posts (TikTok + X) that newly crossed the spike threshold within the window — the "ride the wave" list. */
-export async function fetchRecentSpikePosts(winStart: string, limit = 6): Promise<DigestSpikePost[]> {
-  const rows = await socialQuery<{ brand_name: string; platform: string; caption: string; views: string; post_url: string }>(
-    `SELECT * FROM (
-       SELECT b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption, tp.views::text,
-              COALESCE(
-                NULLIF(tp.post_url, ''),
-                CASE WHEN b.tiktok_handle IS NOT NULL OR tp.author_handle IS NOT NULL
-                  THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
-                  ELSE '' END
-              ) AS post_url
-       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
-       WHERE b.type = 'own' AND tp.spike_flag = true AND tp.spike_detected_at >= ${winStart}
-       UNION ALL
-       SELECT b.name AS brand_name, 'twitter' AS platform, COALESCE(twp.caption,'') AS caption, twp.views::text,
-              COALESCE(
-                NULLIF(twp.post_url, ''),
-                CASE WHEN b.twitter_handle IS NOT NULL OR twp.author_handle IS NOT NULL
-                  THEN 'https://x.com/' || COALESCE(NULLIF(twp.author_handle,''), b.twitter_handle) || '/status/' || twp.post_id
-                  ELSE '' END
-              ) AS post_url
-       FROM twitter_posts twp JOIN brands b ON b.id = twp.brand_id
-       WHERE b.slug = 'mizumi' AND twp.spike_flag = true AND twp.spike_detected_at >= ${winStart}
-     ) sub
-     ORDER BY views::bigint DESC LIMIT $1`,
-    [limit],
-  );
-  return rows.map((r) => ({ brand_name: r.brand_name, platform: r.platform, caption: r.caption, views: parseInt(r.views, 10), post_url: r.post_url || null }));
-}
-
 export interface TopicCount { topic: string; cnt: number }
 
 /** Top comment topics (the ราคา/คุณภาพ/... taxonomy sentiment.ts assigns) — distinct from hashtags. */
@@ -339,132 +286,212 @@ export async function fetchTopTopics(winStart: string, limit = 5): Promise<Topic
   return rows.map((r) => ({ topic: r.topic, cnt: parseInt(r.cnt, 10) }));
 }
 
+function sentimentTotal(s: SentimentCounts): number {
+  return s.positive + s.negative + s.neutral + s.question;
+}
+
 /** One-line interpreted takeaway — the "so what" for the brand. */
 export function takeaway(d: BrandDigest): string {
-  const { positive, negative, neutral, question } = d.sentiment;
-  const totalS = positive + negative + neutral + question;
+  const { negative, question } = d.sentiment;
+  const totalS = sentimentTotal(d.sentiment);
   const negShare = totalS > 0 ? negative / totalS : 0;
-  const ugcDelta = d.prevUgcMentions > 0 ? Math.round(((d.ugcMentions - d.prevUgcMentions) / d.prevUgcMentions) * 100) : null;
+  const ugcDelta = d.prevUgc > 0 ? Math.round(((d.ugc - d.prevUgc) / d.prevUgc) * 100) : null;
+  const leadUgc = d.topPosts.find((p) => !p.isOfficial && p.author);
 
   if (negative >= 5 && negShare >= 0.2) return `⚠️ ความเห็นลบ ${Math.round(negShare * 100)}% — ตรวจสอบด่วน`;
   if (d.spikeCount > 0) return `โพสต์ viral ${d.spikeCount} รายการ กระแสกำลังมา`;
-  if (ugcDelta != null && ugcDelta >= 50 && d.ugcMentions >= 3) {
-    return d.topPost?.isUgc && d.topPost.author ? `UGC โต ${ugcDelta}% — นำโดย @${d.topPost.author}` : `UGC โต ${ugcDelta}% จากรอบก่อน`;
+  if (ugcDelta != null && ugcDelta >= 50 && d.ugc >= 3) {
+    return leadUgc ? `UGC โต ${ugcDelta}% — นำโดย @${leadUgc.author}` : `UGC โต ${ugcDelta}% จากรอบก่อน`;
   }
-  if (d.prevUgcMentions === 0 && d.ugcMentions >= 3) return `เริ่มมีคนพูดถึง ${d.ugcMentions} โพสต์`;
+  if (d.prevUgc === 0 && d.ugc >= 3) return `เริ่มมีคนพูดถึง ${d.ugc} โพสต์`;
   if (question >= 5) return `คำถาม ${question} รายการ — โอกาสตอบเพื่อปิดการขาย`;
-  if (d.ownPosts > 0) return `โพสต์ทางการใหม่ ${d.ownPosts} รายการ`;
-  if (d.ugcMentions > 0) return `มี UGC ${d.ugcMentions} โพสต์`;
+  if (d.official > 0) return `โพสต์ทางการใหม่ ${d.official} รายการ`;
+  if (d.ugc > 0) return `มี UGC ${d.ugc} โพสต์`;
   return 'ทรงตัว ไม่มีสัญญาณเด่น';
 }
 
-/** Colored accent bar + label marking which platform a cluster of stats belongs to. */
-function platformClusterLabel(platform: string, label: string): Flex {
+export interface DigestBubbleOpts {
+  dateStr: string;
+}
+
+function sectionLabel(text: string): Flex {
+  return { type: 'text', text, size: 'xxs', color: C.muted, margin: 'lg' };
+}
+
+/** 2×2 KPI grid: posts / UGC (with delta) / official / views. */
+function kpiGrid(posts: number, ugc: number, prevUgc: number, official: number, views: number): Flex[] {
+  return [
+    {
+      type: 'box', layout: 'horizontal', spacing: 'sm',
+      contents: [kpiTile(String(posts), 'โพสต์ทั้งหมด'), kpiTile(String(ugc), 'UGC', deltaBadge(ugc, prevUgc))],
+    },
+    {
+      type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'md',
+      contents: [kpiTile(String(official), 'ทางการ'), kpiTile(fmt(views), 'วิวรวม')],
+    },
+  ];
+}
+
+function sentimentSection(s: SentimentCounts, caption: string): Flex[] {
+  const total = sentimentTotal(s);
+  if (total === 0) return [];
+  const pct = (n: number) => Math.round((n / total) * 100);
+  return [
+    { type: 'separator', margin: 'lg' },
+    { type: 'text', text: caption, size: 'xxs', color: C.muted, margin: 'lg', wrap: true },
+    sentimentBar(s.positive, s.negative, s.neutral),
+    {
+      type: 'text', size: 'xs', color: C.text, margin: 'sm', wrap: true,
+      text: `บวก ${s.positive} (${pct(s.positive)}%) · กลาง ${s.neutral} (${pct(s.neutral)}%) · ลบ ${s.negative} (${pct(s.negative)}%) · คำถาม ${s.question}`,
+    },
+  ];
+}
+
+function hashtagSection(tags: TagCount[]): Flex[] {
+  if (!tags.length) return [];
+  return [
+    { type: 'separator', margin: 'lg' },
+    sectionLabel('🏷 แฮชแท็กยอดนิยม'),
+    { type: 'text', size: 'xs', color: C.text, wrap: true, margin: 'xs', text: tags.map((h) => `#${h.tag} (${h.cnt})`).join('   ') },
+  ];
+}
+
+/** Ranked, tappable post rows (→ the post). `showBrand` for cross-brand lists. */
+function postRows(posts: DigestPost[], showBrand: boolean): Flex[] {
+  const rows: Flex[] = [];
+  posts.forEach((p, i) => {
+    const tag = p.isOfficial ? 'ทางการ' : `UGC${p.author ? ` @${p.author}` : ''}`;
+    const label = [showBrand ? p.brand_name : null, p.platform, tag].filter(Boolean).join(' · ');
+    const stats = [`👁 ${fmt(p.views)}`, `❤️ ${fmt(p.likes)}`];
+    if (p.engagementRate != null) stats.push(`📈 ${p.engagementRate.toFixed(2)}%`);
+    const box: Flex = {
+      type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'sm' : 'md',
+      contents: [
+        { type: 'text', text: `${i + 1}. ${label}`, size: 'xxs', weight: 'bold', color: platformColor(p.platform), wrap: true },
+        { type: 'text', text: truncate(p.caption || '(ไม่มีแคปชั่น)'), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
+        { type: 'text', text: stats.join('   '), size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
+      ],
+    };
+    if (p.post_url && /^https?:\/\//.test(p.post_url)) box.action = { type: 'uri', label: 'ดูโพสต์', uri: p.post_url };
+    if (i > 0) rows.push({ type: 'separator', margin: 'md' });
+    rows.push(box);
+  });
+  return rows;
+}
+
+/**
+ * "🔥 Needs Attention" — urgency 4–5 negative comments/tweets in the window,
+ * each linked to its post. Which digest this is (morning vs weekly) is
+ * conveyed by the plain text message sent right before the carousel.
+ */
+export function needsAttentionBubble(opts: DigestBubbleOpts, urgent: UrgentDigestComment[]): Flex {
+  const body: Flex[] = [];
+
+  if (urgent.length === 0) {
+    body.push({ type: 'text', text: '✓ ไม่มีคอมเมนต์ลบระดับ U4–U5', size: 'sm', color: C.text, wrap: true });
+  } else {
+    body.push({ type: 'text', text: `🚨 คอมเมนต์ลบเร่งด่วน U4–U5 (${urgent.length})`, size: 'xxs', color: C.muted });
+    urgent.forEach((u, i) => {
+      const box: Flex = {
+        type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'sm' : 'md',
+        contents: [
+          {
+            type: 'text', size: 'xs', weight: 'bold', color: platformColor(u.platform, C.neg),
+            text: `U${u.urgency} · ${u.brand_name} · ${u.platform}`,
+          },
+          { type: 'text', text: truncate(u.content), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
+        ],
+      };
+      if (u.post_url && /^https?:\/\//.test(u.post_url)) {
+        (box.contents as Flex[]).push({ type: 'text', text: '🔗 ดูโพสต์', size: 'xs', color: C.blue, weight: 'bold', margin: 'xs' });
+        box.action = { type: 'uri', label: 'ดูโพสต์', uri: u.post_url };
+      }
+      if (i > 0) body.push({ type: 'separator', margin: 'md' });
+      body.push(box);
+    });
+  }
+
   return {
-    type: 'box', layout: 'horizontal', spacing: 'xs', margin: 'lg',
-    contents: [
-      platformAccentBar(platform),
-      { type: 'text', text: label, size: 'xs', weight: 'bold', color: platformColor(platform), margin: 'sm' },
-    ],
+    type: 'bubble', size: 'mega',
+    header: {
+      type: 'box', layout: 'vertical', backgroundColor: urgent.length > 0 ? C.neg : C.green, paddingAll: '16px',
+      contents: [
+        { type: 'text', text: '🔥 Needs Attention', color: C.white, weight: 'bold', size: 'xl' },
+        { type: 'text', text: `Mizuhada · ${opts.dateStr}`, color: '#fff1f2', size: 'sm', margin: 'xs' },
+      ],
+    },
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px', contents: body },
   };
 }
 
-export function brandBubble(d: BrandDigest, sentimentPeriodLabel: string): Flex {
-  const totalViews = d.ownViews + d.ugcViews;
-  const { positive, negative, neutral, question } = d.sentiment;
-  const newComments = positive + negative + neutral + question;
-
-  const body: Flex[] = [
-    platformClusterLabel('tiktok', '📱 TikTok'),
-    {
-      type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'sm',
+/** "📈 Ride the Wave" — Top 5 spiked UGC posts by engagement, any brand. Caller skips this bubble when the list is empty. */
+export function rideTheWaveBubble(posts: DigestPost[]): Flex {
+  return {
+    type: 'bubble', size: 'mega',
+    header: {
+      type: 'box', layout: 'vertical', backgroundColor: C.ques, paddingAll: '14px',
       contents: [
-        kpiTile(String(d.ownPosts), 'โพสต์ใหม่'),
-        kpiTile(String(d.ugcMentions), 'UGC พูดถึง', deltaBadge(d.ugcMentions, d.prevUgcMentions)),
-        kpiTile(String(newComments), 'คอมเมนต์ใหม่'),
+        { type: 'text', text: '📈 Ride the Wave', color: C.white, weight: 'bold', size: 'lg' },
+        { type: 'text', text: `Top ${posts.length} โพสต์กำลังมาแรง — เรียงตาม engagement`, color: '#fff7ed', size: 'xs', margin: 'sm', wrap: true },
       ],
     },
-    { type: 'text', text: `👁 วิวรวม ${fmt(totalViews)}`, size: 'xxs', color: C.muted, margin: 'sm' },
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '14px', contents: postRows(posts, true) },
+  };
+}
+
+/** "📊 Performance" — cross-brand KPIs: posts / UGC / official / views, sentiment, hashtags (+ comment topics when given). */
+export function performanceBubble(opts: DigestBubbleOpts, digests: BrandDigest[], hashtags: TagCount[], topics: TopicCount[] = []): Flex {
+  const sum = (f: (d: BrandDigest) => number) => digests.reduce((s, d) => s + f(d), 0);
+  const sentiment: SentimentCounts = {
+    positive: sum((d) => d.sentiment.positive),
+    negative: sum((d) => d.sentiment.negative),
+    neutral: sum((d) => d.sentiment.neutral),
+    question: sum((d) => d.sentiment.question),
+  };
+
+  const body: Flex[] = [
+    ...kpiGrid(sum((d) => d.posts), sum((d) => d.ugc), sum((d) => d.prevUgc), sum((d) => d.official), sum((d) => d.views)),
+    ...sentimentSection(sentiment, '📊 ภาพรวมความรู้สึก (คอมเมนต์ทุกแพลตฟอร์ม)'),
+    ...hashtagSection(hashtags),
   ];
-
-  if (newComments > 0) {
-    body.push(
-      { type: 'text', text: `ความรู้สึก (คอมเมนต์${sentimentPeriodLabel} · อาจอยู่บนโพสต์เก่า)`, size: 'xxs', color: C.muted, margin: 'lg', wrap: true },
-      sentimentBar(positive, neutral, negative),
-      {
-        type: 'text', size: 'xs', color: C.text, margin: 'sm', wrap: true,
-        text: `บวก ${positive} · กลาง ${neutral} · ลบ ${negative} · คำถาม ${question}`,
-      },
-    );
-  }
-
-  if (d.topPost && d.topPost.views > 0) {
-    const tag = d.topPost.isUgc ? `UGC${d.topPost.author ? ` @${d.topPost.author}` : ''}` : 'ทางการ';
-    body.push(
-      { type: 'text', text: `🔥 โพสต์เด่น · ${tag}`, size: 'xxs', color: C.muted, margin: 'lg' },
-      { type: 'text', text: truncate(d.topPost.caption || '(ไม่มีแคปชั่น)'), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
-      { type: 'text', text: `👁 ${fmt(d.topPost.views)}   ❤️ ${fmt(d.topPost.likes)}`, size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
-    );
-  }
-
-  // X cluster — only rendered when this brand has X coverage (twitter !== null,
-  // i.e. MizuMi — see docs/scope-x-campaigns.md decision 10).
-  if (d.twitter) {
-    const tw = d.twitter;
-    const twSentimentTotal = tw.sentiment.positive + tw.sentiment.negative + tw.sentiment.neutral + tw.sentiment.question;
-
+  if (topics.length) {
     body.push(
       { type: 'separator', margin: 'lg' },
-      platformClusterLabel('twitter', '🐦 X'),
-      {
-        type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'sm',
-        contents: [
-          kpiTile(String(tw.posts), 'โพสต์/ทวีต'),
-          kpiTile(String(tw.spikeCount), 'Viral'),
-          kpiTile(fmt(tw.views), 'วิวรวม'),
-        ],
-      },
+      sectionLabel('🗣 หัวข้อยอดนิยม'),
+      { type: 'text', size: 'xs', color: C.text, wrap: true, margin: 'xs', text: topics.map((t) => `${t.topic} (${t.cnt})`).join('   ') },
     );
-
-    if (twSentimentTotal > 0) {
-      body.push(
-        { type: 'text', text: `ความรู้สึก (คอมเมนต์${sentimentPeriodLabel})`, size: 'xxs', color: C.muted, margin: 'lg', wrap: true },
-        sentimentBar(tw.sentiment.positive, tw.sentiment.neutral, tw.sentiment.negative),
-        {
-          type: 'text', size: 'xs', color: C.text, margin: 'sm', wrap: true,
-          text: `บวก ${tw.sentiment.positive} · กลาง ${tw.sentiment.neutral} · ลบ ${tw.sentiment.negative} · คำถาม ${tw.sentiment.question}`,
-        },
-      );
-    }
-
-    if (tw.topPost) {
-      body.push(
-        { type: 'text', text: `🔥 โพสต์เด่น${tw.topPost.author ? ` · @${tw.topPost.author}` : ''}`, size: 'xxs', color: C.muted, margin: 'lg' },
-        { type: 'text', text: truncate(tw.topPost.caption || '(no caption)'), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
-        { type: 'text', text: `👁 ${fmt(tw.topPost.views)}   ❤️ ${fmt(tw.topPost.likes)}`, size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
-      );
-    }
   }
 
-  const footer: Flex[] = [];
-  if (d.topPost?.post_url && /^https?:\/\//.test(d.topPost.post_url)) {
-    footer.push({
-      type: 'button', style: 'primary', color: platformColor('tiktok'), height: 'sm',
-      action: { type: 'uri', label: 'ดูโพสต์เด่น (TikTok)', uri: d.topPost.post_url },
-    });
+  return {
+    type: 'bubble', size: 'mega',
+    header: {
+      type: 'box', layout: 'vertical', backgroundColor: C.navy, paddingAll: '16px',
+      contents: [
+        { type: 'text', text: '📊 Performance', color: C.white, weight: 'bold', size: 'xl' },
+        { type: 'text', text: `ทุกแบรนด์ · ${opts.dateStr}`, color: '#dbeafe', size: 'sm', margin: 'xs' },
+      ],
+    },
+    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px', contents: body },
+  };
+}
+
+/** Per-brand bubble: posts / UGC / official / views, sentiment, hashtags, Top 5 posts (tappable). */
+export function brandBubble(d: BrandDigest, periodLabel: string): Flex {
+  const body: Flex[] = kpiGrid(d.posts, d.ugc, d.prevUgc, d.official, d.views);
+
+  const platforms = Object.entries(d.postsByPlatform);
+  if (platforms.length > 1) {
+    const label = (p: string) => (p === 'tiktok' ? '📱 TikTok' : p === 'twitter' ? '🐦 X' : p);
+    body.push({ type: 'text', text: platforms.map(([p, n]) => `${label(p)} ${n}`).join(' · '), size: 'xxs', color: C.muted, margin: 'sm' });
   }
-  if (d.twitter?.topPost?.post_url && /^https?:\/\//.test(d.twitter.topPost.post_url)) {
-    footer.push({
-      type: 'button', style: 'primary', color: platformColor('twitter'), height: 'sm',
-      action: { type: 'uri', label: 'ดูโพสต์เด่น (X)', uri: d.twitter.topPost.post_url },
-    });
-  }
-  const dash = process.env.DASHBOARD_PUBLIC_URL;
-  if (dash && /^https?:\/\//.test(dash)) {
-    footer.push({
-      type: 'button', style: 'secondary', height: 'sm',
-      action: { type: 'uri', label: 'เปิด Dashboard', uri: dash },
-    });
+
+  body.push(
+    ...sentimentSection(d.sentiment, `ความรู้สึก (คอมเมนต์${periodLabel} · อาจอยู่บนโพสต์เก่า)`),
+    ...hashtagSection(d.hashtags),
+  );
+
+  if (d.topPosts.length) {
+    body.push({ type: 'separator', margin: 'lg' }, sectionLabel(`🏆 Top ${d.topPosts.length} โพสต์ (ยอดวิว)`), ...postRows(d.topPosts, false));
   }
 
   const bubble: Flex = {
@@ -478,217 +505,13 @@ export function brandBubble(d: BrandDigest, sentimentPeriodLabel: string): Flex 
     },
     body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '14px', contents: body },
   };
-  if (footer.length) bubble.footer = { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px', contents: footer };
-  return bubble;
-}
 
-export interface DigestBubbleOpts {
-  dateStr: string;
-}
-
-/** Brands whose negative-comment share crossed 20% this window (same bar as takeaway() elsewhere). */
-export function negSpikeBrands(digests: BrandDigest[]): BrandDigest[] {
-  return digests.filter((d) => {
-    const { positive, negative, neutral, question } = d.sentiment;
-    const total = positive + negative + neutral + question;
-    return negative >= 5 && total > 0 && negative / total >= 0.2;
-  });
-}
-
-/**
- * "🔥 Needs Attention" — lead bubble of the carousel. Which digest this is
- * (morning vs weekly) is conveyed by a plain text message sent right before
- * this carousel, not by anything inside the bubbles themselves. Two signal
- * types, both with a direct post link when one exists: (1) individual
- * urgency>=4 negative comments/tweets within the window, (2) negSpikeBrands()
- * above — that one has no single post to link since it's a brand-wide ratio,
- * not one comment.
- */
-export function needsAttentionBubble(opts: DigestBubbleOpts, urgent: UrgentDigestComment[], digests: BrandDigest[]): Flex {
-  const negBrands = negSpikeBrands(digests);
-
-  const body: Flex[] = [];
-
-  if (urgent.length === 0 && negBrands.length === 0) {
-    body.push({ type: 'text', text: '✓ ไม่มีสัญญาณผิดปกติ — ทุกอย่างเรียบร้อย', size: 'sm', color: C.text, wrap: true });
-  } else {
-    if (urgent.length > 0) {
-      body.push({ type: 'text', text: `🚨 คอมเมนต์เร่งด่วน (${urgent.length})`, size: 'xxs', color: C.muted });
-      urgent.forEach((u, i) => {
-        const box: Flex = {
-          type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'sm' : 'md',
-          contents: [
-            {
-              type: 'text', size: 'xs', weight: 'bold', color: platformColor(u.platform, C.neg),
-              text: `U${u.urgency} · ${u.brand_name} · ${u.platform}`,
-            },
-            { type: 'text', text: truncate(u.content), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
-          ],
-        };
-        if (u.post_url && /^https?:\/\//.test(u.post_url)) box.action = { type: 'uri', uri: u.post_url };
-        body.push(box);
-      });
-    }
-    if (negBrands.length > 0) {
-      if (urgent.length > 0) body.push({ type: 'separator', margin: 'lg' });
-      body.push({ type: 'text', text: '⚠️ ความเห็นลบสูง', size: 'xxs', color: C.muted, margin: urgent.length > 0 ? 'lg' : 'none' });
-      for (const d of negBrands) {
-        const { negative, positive, neutral, question } = d.sentiment;
-        const total = positive + negative + neutral + question;
-        body.push({
-          type: 'text', size: 'xs', color: C.text, margin: 'sm', wrap: true,
-          text: `${d.name}: ลบ ${Math.round((negative / total) * 100)}% (${negative} คอมเมนต์)`,
-        });
-      }
-    }
-  }
-
-  return {
-    type: 'bubble', size: 'mega',
-    header: {
-      type: 'box', layout: 'vertical', backgroundColor: (urgent.length > 0 || negBrands.length > 0) ? C.neg : C.green, paddingAll: '16px',
-      contents: [
-        { type: 'text', text: '🔥 Needs Attention', color: C.white, weight: 'bold', size: 'xl' },
-        { type: 'text', text: `Mizuhada · ${opts.dateStr}`, color: '#fff1f2', size: 'sm', margin: 'xs' },
-      ],
-    },
-    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px', contents: body },
-  };
-}
-
-/** Second bubble — "📈 Ride the Wave": posts that newly crossed spike threshold this window, each linked. Caller skips this bubble entirely when the list is empty. */
-export function rideTheWaveBubble(spikes: DigestSpikePost[]): Flex {
-  const rows: Flex[] = [];
-  spikes.forEach((p, i) => {
-    if (i > 0) rows.push({ type: 'separator', margin: 'lg' });
-    const box: Flex = {
-      type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'none' : 'lg',
-      contents: [
-        { type: 'text', text: `${p.brand_name} · ${p.platform}`, size: 'xxs', weight: 'bold', color: platformColor(p.platform) },
-        { type: 'text', text: truncate(p.caption || '(no caption)'), size: 'sm', color: C.text, wrap: true, margin: 'xs' },
-        { type: 'text', text: `👁 ${fmt(p.views)}`, size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
-      ],
+  const dash = process.env.DASHBOARD_PUBLIC_URL;
+  if (dash && /^https?:\/\//.test(dash)) {
+    bubble.footer = {
+      type: 'box', layout: 'vertical', paddingAll: '12px',
+      contents: [{ type: 'button', style: 'secondary', height: 'sm', action: { type: 'uri', label: 'เปิด Dashboard', uri: dash } }],
     };
-    if (p.post_url && /^https?:\/\//.test(p.post_url)) box.action = { type: 'uri', uri: p.post_url };
-    rows.push(box);
-  });
-
-  return {
-    type: 'bubble', size: 'mega',
-    header: {
-      type: 'box', layout: 'vertical', backgroundColor: C.ques, paddingAll: '14px',
-      contents: [
-        { type: 'text', text: '📈 Ride the Wave', color: C.white, weight: 'bold', size: 'lg' },
-        { type: 'text', text: 'โพสต์ viral ใหม่ — ควรรีบแชร์/ตอบขณะกระแสมา', color: '#fff7ed', size: 'xs', margin: 'sm', wrap: true },
-      ],
-    },
-    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '14px', contents: rows },
-  };
-}
-
-/**
- * Third bubble — "📊 Performance": cross-brand pulse (with vs-prior-period
- * delta where cheaply available) + ranked top posts across TikTok and X.
- * Consolidates what summaryBubble()/topPostsBubble() used to split across two
- * generic bubbles into one purposeful "how are we doing" section.
- */
-export function performanceBubble(opts: DigestBubbleOpts, digests: BrandDigest[], topPosts: TopPost[], hashtags: { tag: string; cnt: number }[], topics: TopicCount[]): Flex {
-  const totUgc = digests.reduce((s, d) => s + d.ugcMentions, 0);
-  const totPrevUgc = digests.reduce((s, d) => s + d.prevUgcMentions, 0);
-  const totTkPosts = digests.reduce((s, d) => s + d.ownPosts + d.ugcMentions, 0);
-  const totViews = digests.reduce((s, d) => s + d.ownViews + d.ugcViews + (d.twitter?.views ?? 0), 0);
-  const totSpikes = digests.reduce((s, d) => s + d.spikeCount + (d.twitter?.spikeCount ?? 0), 0);
-  const totPos = digests.reduce((s, d) => s + d.sentiment.positive + (d.twitter?.sentiment.positive ?? 0), 0);
-  const totNeu = digests.reduce((s, d) => s + d.sentiment.neutral + (d.twitter?.sentiment.neutral ?? 0), 0);
-  const totNeg = digests.reduce((s, d) => s + d.sentiment.negative + (d.twitter?.sentiment.negative ?? 0), 0);
-  const totQ = digests.reduce((s, d) => s + d.sentiment.question + (d.twitter?.sentiment.question ?? 0), 0);
-  const totSentiment = totPos + totNeu + totNeg + totQ;
-  const pct = (n: number) => totSentiment > 0 ? Math.round((n / totSentiment) * 100) : 0;
-  const totTwPosts = digests.reduce((s, d) => s + (d.twitter?.posts ?? 0), 0);
-  const hasTwitter = digests.some((d) => d.twitter);
-
-  const body: Flex[] = [
-    {
-      type: 'box', layout: 'horizontal', spacing: 'sm',
-      contents: [
-        kpiTile(String(totTkPosts + totTwPosts), 'โพสต์รวม'),
-        kpiTile(String(totUgc), 'UGC พูดถึง', deltaBadge(totUgc, totPrevUgc)),
-      ],
-    },
-    {
-      type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'md',
-      contents: [kpiTile(fmt(totViews), 'วิวรวม'), kpiTile(String(totSpikes), 'โพสต์ viral')],
-    },
-  ];
-
-  if (hasTwitter) {
-    body.push(
-      { type: 'separator', margin: 'lg' },
-      { type: 'text', text: '🌐 แยกตามแพลตฟอร์ม', size: 'xxs', color: C.muted, margin: 'lg' },
-      {
-        type: 'box', layout: 'horizontal', spacing: 'sm', margin: 'sm',
-        contents: [
-          { type: 'text', text: `📱 TikTok: ${totTkPosts}`, size: 'xs', color: platformColor('tiktok'), weight: 'bold' },
-          { type: 'text', text: `🐦 X: ${totTwPosts}`, size: 'xs', color: platformColor('twitter'), weight: 'bold' },
-        ],
-      },
-    );
   }
-
-  if (totSentiment > 0) {
-    body.push(
-      { type: 'separator', margin: 'lg' },
-      { type: 'text', text: '📊 ภาพรวมความรู้สึก', size: 'xxs', color: C.muted, margin: 'lg' },
-      sentimentBar(totPos, totNeg, totNeu),
-      {
-        type: 'text', size: 'xs', color: C.text, margin: 'sm', wrap: true,
-        text: `บวก ${totPos} (${pct(totPos)}%) · กลาง ${totNeu} (${pct(totNeu)}%) · ลบ ${totNeg} (${pct(totNeg)}%) · คำถาม ${totQ}`,
-      },
-    );
-  }
-
-  if (hashtags.length) {
-    body.push(
-      { type: 'separator', margin: 'lg' },
-      { type: 'text', text: '🏷 แฮชแท็กมาแรง', size: 'xxs', color: C.muted, margin: 'lg' },
-      { type: 'text', size: 'xs', color: C.text, wrap: true, margin: 'xs', text: hashtags.map((h) => `#${h.tag} (${h.cnt})`).join('   ') },
-    );
-  }
-
-  if (topics.length) {
-    body.push(
-      { type: 'separator', margin: 'lg' },
-      { type: 'text', text: '🗣 หัวข้อยอดนิยม', size: 'xxs', color: C.muted, margin: 'lg' },
-      { type: 'text', size: 'xs', color: C.text, wrap: true, margin: 'xs', text: topics.map((t) => `${t.topic} (${t.cnt})`).join('   ') },
-    );
-  }
-
-  if (topPosts.length) {
-    body.push({ type: 'separator', margin: 'lg' }, { type: 'text', text: '🏆 โพสต์เด่นที่สุด', size: 'xxs', color: C.muted, margin: 'lg' });
-    topPosts.forEach((p, i) => {
-      const tag = p.isUgc ? `UGC${p.author ? ` @${p.author}` : ''}` : 'ทางการ';
-      const box: Flex = {
-        type: 'box', layout: 'vertical', spacing: 'xs', margin: 'sm',
-        contents: [
-          { type: 'text', text: `${i + 1}. ${p.brand_name} · ${p.platform} · ${tag}`, size: 'xxs', weight: 'bold', color: platformColor(p.platform) },
-          { type: 'text', text: truncate(p.caption || '(ไม่มีแคปชั่น)'), size: 'sm', color: C.text, wrap: true, margin: 'xs' },
-          { type: 'text', text: `👁 ${fmt(p.views)}   ❤️ ${fmt(p.likes)}`, size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
-        ],
-      };
-      if (p.post_url && /^https?:\/\//.test(p.post_url)) box.action = { type: 'uri', uri: p.post_url };
-      body.push(box);
-    });
-  }
-
-  return {
-    type: 'bubble', size: 'mega',
-    header: {
-      type: 'box', layout: 'vertical', backgroundColor: C.navy, paddingAll: '16px',
-      contents: [
-        { type: 'text', text: '📊 Performance', color: C.white, weight: 'bold', size: 'xl' },
-        { type: 'text', text: `Mizuhada · ${opts.dateStr}`, color: '#dbeafe', size: 'sm', margin: 'xs' },
-      ],
-    },
-    body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px', contents: body },
-  };
+  return bubble;
 }

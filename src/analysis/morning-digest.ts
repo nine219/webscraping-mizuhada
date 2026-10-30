@@ -1,8 +1,7 @@
-import { socialQuery } from '../db/social-client';
 import { sendLineTextThenFlex, sanitizeCarousel } from '../alerts/line';
 import {
-  fetchBrandDigest, fetchTopHashtags, fetchTopPosts, fetchUrgentComments, fetchRecentSpikePosts,
-  brandBubble, needsAttentionBubble, rideTheWaveBubble, performanceBubble, negSpikeBrands,
+  fetchDigestBrands, fetchDigestData, fetchUrgentComments, fetchRideTheWave,
+  brandBubble, needsAttentionBubble, rideTheWaveBubble, performanceBubble,
 } from './digest-common';
 
 // Calendar window (Bangkok): from start of yesterday (00:00) up to now.
@@ -13,19 +12,11 @@ const PRIOR_START = "(date_trunc('day', now() AT TIME ZONE 'Asia/Bangkok') - int
 export async function sendMorningDigest(): Promise<void> {
   console.log('[Digest] Building morning digest...');
 
-  const brandsRes = await socialQuery<{ id: string; name: string; slug: string }>(
-    `SELECT id::text, name, slug FROM brands WHERE type = 'own' ORDER BY name`,
-    [],
-  );
-
-  const digests = await Promise.all(
-    brandsRes.map((b) => fetchBrandDigest(parseInt(b.id, 10), b.name, WIN_START, PRIOR_START, b.slug)),
-  );
-  const [hashtags, topPosts, urgent, spikes] = await Promise.all([
-    fetchTopHashtags(WIN_START),
-    fetchTopPosts(WIN_START),
+  const brands = await fetchDigestBrands();
+  const [data, urgent, wave] = await Promise.all([
+    fetchDigestData(brands, WIN_START, PRIOR_START),
     fetchUrgentComments(WIN_START),
-    fetchRecentSpikePosts(WIN_START),
+    fetchRideTheWave(WIN_START),
   ]);
 
   const dateStr = new Date().toLocaleDateString('th-TH', {
@@ -33,23 +24,21 @@ export async function sendMorningDigest(): Promise<void> {
   });
   const bubbleOpts = { dateStr };
 
-  // Needs Attention only fires when there's something to report — a quiet
-  // morning shouldn't open with a bubble whose only content is "all clear".
-  const hasAttention = urgent.length > 0 || negSpikeBrands(digests).length > 0;
-
+  // Needs Attention / Ride the Wave only appear when there's something in
+  // them — a quiet morning shouldn't open with an "all clear" bubble.
   const carousel = {
     type: 'carousel',
     contents: sanitizeCarousel([
-      ...(hasAttention ? [needsAttentionBubble(bubbleOpts, urgent, digests)] : []),
-      ...(spikes.length ? [rideTheWaveBubble(spikes)] : []),
-      performanceBubble(bubbleOpts, digests, topPosts, hashtags, []),
-      ...digests.map((d) => brandBubble(d, 'เมื่อวาน')),
+      ...(urgent.length ? [needsAttentionBubble(bubbleOpts, urgent)] : []),
+      ...(wave.length ? [rideTheWaveBubble(wave)] : []),
+      performanceBubble(bubbleOpts, data.brands, data.hashtags),
+      ...data.brands.map((d) => brandBubble(d, 'เมื่อวาน')),
     ]),
   };
 
-  const totUgc = digests.reduce((s, d) => s + d.ugcMentions, 0);
-  const totNeg = digests.reduce((s, d) => s + d.sentiment.negative, 0);
-  const totSpikes = digests.reduce((s, d) => s + d.spikeCount, 0);
+  const totUgc = data.brands.reduce((s, d) => s + d.ugc, 0);
+  const totNeg = data.brands.reduce((s, d) => s + d.sentiment.negative, 0);
+  const totSpikes = data.brands.reduce((s, d) => s + d.spikeCount, 0);
   const altText = `🌅 Mizuhada Digest ${dateStr} — UGC ${totUgc} · ลบ ${totNeg} · viral ${totSpikes}`;
   const greeting = `☀️ อรุณสวัสดิ์! สรุปโซเชียล Mizuhada ประจำวันที่ ${dateStr}`;
 
