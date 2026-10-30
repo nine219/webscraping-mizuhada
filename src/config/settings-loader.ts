@@ -95,6 +95,7 @@ export interface ScheduleSettings {
   morningDigest: ScheduleEntry;
   weeklyDigest: ScheduleEntry;
   tiktokSpikeDigest: ScheduleEntry;
+  negativeSpikeDigest: ScheduleEntry;
 }
 
 export interface AppSettings {
@@ -171,6 +172,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     morningDigest: { enabled: true, label: 'LINE morning digest',       cron: '0 7 * * *' },
     weeklyDigest:  { enabled: true, label: 'Weekly digest',             cron: '0 8 * * 1' },
     tiktokSpikeDigest: { enabled: true, label: 'TikTok daily top-5 spike digest', cron: '0 18 * * *' },
+    negativeSpikeDigest: { enabled: true, label: 'LINE negative sentiment spike (Top 5)', cron: '0 7,12,18 * * *' },
   },
   ai: {
     provider: 'gemini',

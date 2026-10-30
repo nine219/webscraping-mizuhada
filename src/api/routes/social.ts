@@ -368,8 +368,8 @@ router.post('/analyze', async (_req: Request, res: Response) => {
 
 // ── POST /api/social/test-negative-spike-alert ────────────────────────────────
 // Manual test fire (Settings → Alerts). Sends a real LINE message using current
-// data (or a synthetic sample if there's none yet) — doesn't touch the once-per-
-// brand-per-day de-dupe used by the real scheduled check.
+// data (or a synthetic sample if there's none yet) — highest-negative-share
+// brand + its Top 5, regardless of whether it crosses the threshold.
 router.post('/test-negative-spike-alert', async (_req: Request, res: Response) => {
   try {
     const sent = await sendTestNegativeSpikeAlert();

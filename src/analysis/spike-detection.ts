@@ -483,44 +483,128 @@ export async function detectTwitterSpikes(): Promise<SpikeResult[]> {
 const DEFAULT_NEGATIVE_SPIKE_PCT = 35;
 const NEGATIVE_SPIKE_MIN_SAMPLE = 5; // don't alert off a handful of comments
 const NEGATIVE_SPIKE_WINDOW_SQL = `INTERVAL '24 hours'`;
-
-// One alert per brand per calendar day, in-memory. Resets on process restart —
-// acceptable: worst case is one extra alert after a scheduler restart, never a
-// missed one (a real ongoing spike will still be above threshold next tick).
-const negativeSpikeAlertedToday = new Map<string, string>();
-
-function todayKey(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const NEGATIVE_SPIKE_TOP_N = 5;
+const NEGATIVE_SPIKE_MIN_URGENCY = 3;
 
 interface NegativeSpikeRow {
+  brand_id: string;
   brand_slug: string;
   brand_name: string;
   total: string;
   negative: string;
 }
 
-function negativeSpikeBubble(
-  brandName: string, negPct: number, thresholdPct: number,
-  total: number, topTopics: { topic: string; count: number }[],
-): Flex {
-  const body: Flex[] = [
-    {
-      type: 'box', layout: 'horizontal', spacing: 'sm',
-      contents: [
-        kpiTile(`${negPct.toFixed(0)}%`, 'Negative'),
-        kpiTile(String(total), 'Comments (24h)'),
-      ],
-    },
-    { type: 'text', text: `Threshold: ${thresholdPct}%`, size: 'xxs', color: C.muted, margin: 'sm' },
-  ];
-  if (topTopics.length > 0) {
-    body.push({ type: 'separator', margin: 'lg' });
-    body.push({ type: 'text', text: 'Top complaint topics', size: 'xs', color: C.muted, margin: 'lg' });
-    for (const t of topTopics) {
-      body.push({ type: 'text', text: `• ${t.topic} (${t.count})`, size: 'xs', color: C.text, margin: 'xs', wrap: true });
+interface NegativeSpikeBrand {
+  brandId: number;
+  brandName: string;
+  negPct: number;
+  negative: number;
+  total: number;
+}
+
+interface NegativeSpikeComment {
+  content: string;
+  topic: string | null;
+  urgency: number;
+  brand_name: string;
+  platform: string;
+  post_url: string | null;
+}
+
+const SPIKE_BRANDS_SQL = `
+  SELECT b.id::text AS brand_id, b.slug AS brand_slug, b.name AS brand_name,
+         COUNT(*)::text AS total,
+         COUNT(*) FILTER (WHERE sc.sentiment = 'negative')::text AS negative
+  FROM social_comments sc
+  JOIN brands b ON b.id = sc.brand_id
+  WHERE b.type = 'own' AND sc.sentiment IS NOT NULL
+    AND sc.published_at >= NOW() - ${NEGATIVE_SPIKE_WINDOW_SQL}
+  GROUP BY b.id, b.slug, b.name`;
+
+function toSpikeBrand(row: NegativeSpikeRow): NegativeSpikeBrand {
+  const total = parseInt(row.total, 10);
+  const negative = parseInt(row.negative, 10);
+  return { brandId: parseInt(row.brand_id, 10), brandName: row.brand_name, negPct: total > 0 ? (negative / total) * 100 : 0, negative, total };
+}
+
+/**
+ * Top negative comments (urgency >= 3) for the given brands over the last 24h,
+ * ordered urgency 5→4→3, then topic สุขภาพ → คุณภาพ → everything else, then
+ * newest first. Each resolved to its parent post's URL where possible.
+ */
+async function fetchTopNegativeComments(brandIds: number[]): Promise<NegativeSpikeComment[]> {
+  const rows = await query<{
+    content: string; topic: string | null; urgency: number; brand_name: string; platform: string;
+    post_id: string | null; post_url: string | null; author_handle: string | null;
+  }>(
+    `SELECT sc.content, sc.topic, sc.urgency, b.name AS brand_name, sc.platform, sc.post_id,
+            COALESCE(NULLIF(tp.post_url,''), NULLIF(twp.post_url,''), NULLIF(ip.post_url,''), NULLIF(xp.post_url,''), NULLIF(sc.original_post_url,'')) AS post_url,
+            COALESCE(tp.author_handle, twp.author_handle) AS author_handle
+     FROM social_comments sc
+     JOIN brands b ON b.id = sc.brand_id
+     LEFT JOIN tiktok_posts tp ON sc.platform = 'tiktok' AND tp.brand_id = sc.brand_id AND tp.post_id = sc.post_id
+     LEFT JOIN twitter_posts twp ON sc.platform = 'twitter' AND twp.brand_id = sc.brand_id AND twp.post_id = sc.post_id
+     LEFT JOIN instagram_posts ip ON sc.platform = 'instagram' AND ip.brand_id = sc.brand_id AND ip.post_id = sc.post_id
+     LEFT JOIN xhs_posts xp ON sc.platform IN ('xhs', 'xiaohongshu') AND xp.note_id = sc.post_id
+     WHERE sc.brand_id = ANY($1::int[])
+       AND sc.sentiment = 'negative' AND sc.urgency >= $2
+       AND sc.published_at >= NOW() - ${NEGATIVE_SPIKE_WINDOW_SQL}
+     ORDER BY sc.urgency DESC,
+              CASE sc.topic WHEN 'สุขภาพ' THEN 0 WHEN 'คุณภาพ' THEN 1 ELSE 2 END,
+              sc.published_at DESC
+     LIMIT $3`,
+    [brandIds, NEGATIVE_SPIKE_MIN_URGENCY, NEGATIVE_SPIKE_TOP_N],
+  );
+  return rows.map((r) => {
+    let postUrl = r.post_url;
+    if (!postUrl && r.post_id) {
+      if (r.platform === 'tiktok' && r.author_handle) postUrl = `https://www.tiktok.com/@${r.author_handle}/video/${r.post_id}`;
+      else if (r.platform === 'twitter' && r.author_handle) postUrl = `https://x.com/${r.author_handle}/status/${r.post_id}`;
+      else if (r.platform === 'instagram') postUrl = `https://www.instagram.com/p/${r.post_id}/`;
+      else if (r.platform === 'xhs' || r.platform === 'xiaohongshu') postUrl = `https://www.xiaohongshu.com/explore/${r.post_id}`;
     }
+    return { content: r.content, topic: r.topic, urgency: r.urgency, brand_name: r.brand_name, platform: r.platform, post_url: postUrl };
+  });
+}
+
+function urgencyColor(urgency: number): string {
+  if (urgency >= 5) return C.neg;
+  if (urgency === 4) return C.ques;
+  return C.muted;
+}
+
+/**
+ * One bubble per run: every brand over the threshold (header rows), then the
+ * Top 5 negative comments across those brands, each row tappable → its post.
+ */
+function negativeSpikeBubble(brands: NegativeSpikeBrand[], thresholdPct: number, comments: NegativeSpikeComment[], subtitle: string): Flex {
+  const body: Flex[] = brands.map((b, i) => ({
+    type: 'box', layout: 'horizontal', margin: i === 0 ? 'none' : 'sm',
+    contents: [
+      { type: 'text', text: b.brandName, size: 'sm', weight: 'bold', color: C.navy, flex: 3, wrap: true },
+      { type: 'text', text: `${b.negPct.toFixed(0)}% ลบ`, size: 'sm', weight: 'bold', color: C.neg, flex: 2, align: 'end' },
+      { type: 'text', text: `${b.negative}/${b.total}`, size: 'xs', color: C.muted, flex: 2, align: 'end', gravity: 'center' },
+    ],
+  }));
+  body.push({ type: 'text', text: `คอมเมนต์ 24 ชม. · Threshold ${thresholdPct}%`, size: 'xxs', color: C.muted, margin: 'sm' });
+  body.push({ type: 'separator', margin: 'lg' });
+  body.push({ type: 'text', text: `Top ${NEGATIVE_SPIKE_TOP_N} คอมเมนต์ลบ (U5→U3 · สุขภาพ→คุณภาพ→อื่นๆ)`, size: 'xs', color: C.muted, margin: 'lg', wrap: true });
+
+  if (comments.length === 0) {
+    body.push({ type: 'text', text: `ไม่มีคอมเมนต์ระดับ U${NEGATIVE_SPIKE_MIN_URGENCY} ขึ้นไป`, size: 'xs', color: C.text, margin: 'md' });
   }
+  comments.forEach((c, i) => {
+    const rowContents: Flex[] = [
+      { type: 'text', text: `U${c.urgency} · ${c.topic || 'อื่นๆ'} · ${c.brand_name} · ${c.platform}`, size: 'xxs', weight: 'bold', color: urgencyColor(c.urgency), wrap: true },
+      { type: 'text', text: truncate(c.content), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
+    ];
+    const hasUrl = !!c.post_url && /^https?:\/\//.test(c.post_url);
+    if (hasUrl) rowContents.push({ type: 'text', text: '🔗 ดูโพสต์', size: 'xs', color: C.blue, weight: 'bold', margin: 'xs' });
+    if (i > 0) body.push({ type: 'separator', margin: 'md' });
+    const row: Flex = { type: 'box', layout: 'vertical', margin: 'md', contents: rowContents };
+    if (hasUrl) row.action = { type: 'uri', label: 'ดูโพสต์', uri: c.post_url as string };
+    body.push(row);
+  });
 
   return {
     type: 'bubble', size: 'mega',
@@ -528,66 +612,51 @@ function negativeSpikeBubble(
       type: 'box', layout: 'vertical', backgroundColor: C.neg, paddingAll: '14px',
       contents: [
         { type: 'text', text: '⚠️ Negative Sentiment Spike', color: C.white, weight: 'bold', size: 'lg' },
-        { type: 'text', text: brandName, color: '#fff1f2', size: 'sm', margin: 'xs' },
+        { type: 'text', text: subtitle, color: '#fff1f2', size: 'sm', margin: 'xs' },
       ],
     },
     body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '14px', contents: body },
   };
 }
 
-async function topNegativeTopics(brandSlug: string): Promise<{ topic: string; count: number }[]> {
-  const rows = await query<{ topic: string; cnt: string }>(
-    `SELECT sc.topic, COUNT(*)::text AS cnt
-     FROM social_comments sc
-     JOIN brands b ON b.id = sc.brand_id
-     WHERE b.slug = $1 AND sc.sentiment = 'negative' AND sc.topic IS NOT NULL
-       AND sc.published_at >= NOW() - ${NEGATIVE_SPIKE_WINDOW_SQL}
-     GROUP BY sc.topic ORDER BY cnt DESC LIMIT 3`,
-    [brandSlug],
-  );
-  return rows.map((t) => ({ topic: t.topic, count: parseInt(t.cnt, 10) }));
+function bangkokStamp(): string {
+  return new Date().toLocaleString('th-TH', {
+    timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
 }
 
 /**
  * Checks each own brand's negative-comment share over the last 24h against
- * thresholds.negativeSpikePct. Alerts once per brand per day via LINE. Called
- * from the scheduler's sentiment job (src/scheduler/cron.ts), right after new
- * comments get classified — that's the only time the negative share can move.
+ * thresholds.negativeSpikePct. If any brand is over, sends ONE LINE bubble:
+ * the over-threshold brands + their Top 5 negative comments (U5→U3, สุขภาพ →
+ * คุณภาพ → อื่นๆ) with post links. Runs on its own cron (negativeSpikeDigest,
+ * default 07:00/12:00/18:00 Bangkok) — at most one push per round, so no
+ * per-day dedupe needed. Sends nothing when no brand is over the threshold.
  */
 export async function checkNegativeSentimentSpikes(): Promise<{ alerted: string[] }> {
   const th = await getThresholds().catch(() => null);
   const thresholdPct = th?.negativeSpikePct ?? DEFAULT_NEGATIVE_SPIKE_PCT;
 
-  const rows = await query<NegativeSpikeRow>(
-    `SELECT b.slug AS brand_slug, b.name AS brand_name,
-            COUNT(*)::text AS total,
-            COUNT(*) FILTER (WHERE sc.sentiment = 'negative')::text AS negative
-     FROM social_comments sc
-     JOIN brands b ON b.id = sc.brand_id
-     WHERE b.type = 'own' AND sc.sentiment IS NOT NULL
-       AND sc.published_at >= NOW() - ${NEGATIVE_SPIKE_WINDOW_SQL}
-     GROUP BY b.slug, b.name`,
-  );
+  const rows = await query<NegativeSpikeRow>(SPIKE_BRANDS_SQL);
+  const spiking = rows
+    .map((r) => ({ row: r, b: toSpikeBrand(r) }))
+    .filter(({ b }) => b.total >= NEGATIVE_SPIKE_MIN_SAMPLE && b.negPct >= thresholdPct)
+    .sort((x, y) => y.b.negPct - x.b.negPct);
 
-  const today = todayKey();
-  const alerted: string[] = [];
-
-  for (const row of rows) {
-    const total = parseInt(row.total, 10);
-    const negative = parseInt(row.negative, 10);
-    if (total < NEGATIVE_SPIKE_MIN_SAMPLE) continue;
-    const negPct = (negative / total) * 100;
-    if (negPct < thresholdPct) continue;
-    if (negativeSpikeAlertedToday.get(row.brand_slug) === today) continue;
-
-    const topTopics = await topNegativeTopics(row.brand_slug);
-    const altText = `⚠️ Negative sentiment spike — ${row.brand_name} · ${negPct.toFixed(0)}% negative`;
-    await sendLineFlex(altText, negativeSpikeBubble(row.brand_name, negPct, thresholdPct, total, topTopics));
-    negativeSpikeAlertedToday.set(row.brand_slug, today);
-    alerted.push(row.brand_slug);
+  if (spiking.length === 0) {
+    console.log('[NegativeSpike] No brand over threshold — skipping.');
+    return { alerted: [] };
   }
 
-  return { alerted };
+  const brands = spiking.map((s) => s.b);
+  const comments = await fetchTopNegativeComments(brands.map((b) => b.brandId));
+  const top = brands[0];
+  const altText = `⚠️ Negative sentiment spike — ${brands.map((b) => `${b.brandName} ${b.negPct.toFixed(0)}%`).join(', ')}`
+    + (comments[0] ? ` · Top: U${comments[0].urgency} ${comments[0].topic || 'อื่นๆ'}` : '');
+  console.log(`[NegativeSpike] Alerting ${brands.length} brand(s), top ${top.brandName} ${top.negPct.toFixed(0)}%, ${comments.length} comment(s).`);
+  await sendLineFlex(altText, negativeSpikeBubble(brands, thresholdPct, comments, bangkokStamp()));
+
+  return { alerted: spiking.map((s) => s.row.brand_slug) };
 }
 
 // ── Urgent negative comment (per-comment LINE alert) ────────────────────────
@@ -664,9 +733,7 @@ function urgentNegativeBubble(row: UrgentNegativeRow): Flex {
 /**
  * Called from classifyUnanalyzedComments right after a batch is freshly
  * classified — that function only ever selects sentiment IS NULL rows, so
- * each comment passes through here at most once. No separate dedup needed,
- * unlike checkNegativeSentimentSpikes()'s once-per-brand-per-day map (that
- * one re-evaluates the same rows every run, this one doesn't).
+ * each comment passes through here at most once. No separate dedup needed.
  *
  * Multiple urgent comments from the same classify batch are combined into
  * one LINE carousel message (one bubble per comment) instead of one push per
@@ -702,35 +769,23 @@ export async function sendTestNegativeSpikeAlert(): Promise<boolean> {
   const th = await getThresholds().catch(() => null);
   const thresholdPct = th?.negativeSpikePct ?? DEFAULT_NEGATIVE_SPIKE_PCT;
 
-  const rows = await query<NegativeSpikeRow>(
-    `SELECT b.slug AS brand_slug, b.name AS brand_name,
-            COUNT(*)::text AS total,
-            COUNT(*) FILTER (WHERE sc.sentiment = 'negative')::text AS negative
-     FROM social_comments sc
-     JOIN brands b ON b.id = sc.brand_id
-     WHERE b.type = 'own' AND sc.sentiment IS NOT NULL
-       AND sc.published_at >= NOW() - ${NEGATIVE_SPIKE_WINDOW_SQL}
-     GROUP BY b.slug, b.name
-     HAVING COUNT(*) > 0
-     ORDER BY (COUNT(*) FILTER (WHERE sc.sentiment = 'negative'))::numeric / COUNT(*) DESC
-     LIMIT 1`,
-  );
+  const rows = await query<NegativeSpikeRow>(SPIKE_BRANDS_SQL);
+  const top = rows.map(toSpikeBrand).filter((b) => b.total > 0).sort((x, y) => y.negPct - x.negPct)[0];
 
-  if (rows.length === 0) {
+  if (!top) {
+    const sample: NegativeSpikeComment[] = [
+      { content: 'ใช้แล้วแพ้ หน้าแดงเป็นผื่น', topic: 'สุขภาพ', urgency: 5, brand_name: 'Test Brand', platform: 'tiktok', post_url: null },
+      { content: 'ได้ของปลอมมา ขวดไม่เหมือนของจริง', topic: 'คุณภาพ', urgency: 4, brand_name: 'Test Brand', platform: 'twitter', post_url: null },
+    ];
     return sendLineFlex(
       '🧪 Test alert — Negative Sentiment Spike',
-      negativeSpikeBubble('Test Brand (no data yet)', 42, thresholdPct, 12, [{ topic: 'ราคา', count: 3 }, { topic: 'คุณภาพ', count: 2 }]),
+      negativeSpikeBubble([{ brandId: 0, brandName: 'Test Brand (no data yet)', negPct: 42, negative: 5, total: 12 }], thresholdPct, sample, `🧪 TEST · ${bangkokStamp()}`),
     );
   }
 
-  const row = rows[0];
-  const total = parseInt(row.total, 10);
-  const negative = parseInt(row.negative, 10);
-  const negPct = total > 0 ? (negative / total) * 100 : 0;
-  const topTopics = await topNegativeTopics(row.brand_slug);
-
+  const comments = await fetchTopNegativeComments([top.brandId]);
   return sendLineFlex(
-    `🧪 Test alert — ${row.brand_name} · ${negPct.toFixed(0)}% negative`,
-    negativeSpikeBubble(`${row.brand_name} (TEST)`, negPct, thresholdPct, total, topTopics),
+    `🧪 Test alert — ${top.brandName} · ${top.negPct.toFixed(0)}% negative`,
+    negativeSpikeBubble([{ ...top, brandName: `${top.brandName} (TEST)` }], thresholdPct, comments, `🧪 TEST · ${bangkokStamp()}`),
   );
 }

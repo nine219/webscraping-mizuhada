@@ -106,7 +106,8 @@ For each comment, classify:
     • OFF-TOPIC / NOISE that isn't about the product: bare friend tags ("@someone"), celebrity/fan chatter ("my gege", "มังกร🐲", k-pop names), stickers, keyboard mash / gibberish (".บ.บฝบ", "ขข")
     Do NOT use neutral as a dumping ground — if a comment shows ANY of the positive engagement signals above, label it positive.
 
-- topic: one of "ราคา" (price), "คุณภาพ" (quality), "บรรจุภัณฑ์" (packaging), "ประสิทธิภาพ" (efficacy), "กลิ่น" (scent), "สี" (color), "บริการ" (service), "ขายต่อ/มือสอง" (resale/secondhand — Twitter only), "อื่นๆ" (other)
+- topic: one of "ราคา" (price), "คุณภาพ" (quality), "สุขภาพ" (health/safety), "บรรจุภัณฑ์" (packaging), "ประสิทธิภาพ" (efficacy), "กลิ่น" (scent), "สี" (color), "บริการ" (service), "ขายต่อ/มือสอง" (resale/secondhand — Twitter only), "อื่นๆ" (other)
+  - "สุขภาพ": the comment is about a bodily/health effect of using the product — allergic reaction, rash, itching, irritation, breakouts/acne caused by it, swelling, burning, stinging, illness, "แพ้", "ผื่น", "คัน", "แสบ", "บวม", "สิวขึ้น", "ระคายเคือง". Takes priority over "คุณภาพ"/"ประสิทธิภาพ" whenever a health effect is described. Not for a plain "didn't work" (that's "ประสิทธิภาพ").
   - "ขายต่อ/มือสอง": pairs with sentiment="resale" above — ONLY when platform="twitter" AND the comment is someone reselling/trading a used or opened bottle — "WTS", "ขายต่อ", "มือสอง", "เหลือใช้", posting remaining ml + price + meetup/shipping terms. Never use this topic for TikTok/XHS/Instagram comments — treat similar content there under its normal topic instead.
 - score: confidence 0.0–1.0
 - urgency: ONLY when sentiment is "negative", rate how urgently this needs a human response, on a 1-5 scale:

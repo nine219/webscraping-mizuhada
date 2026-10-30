@@ -60,8 +60,6 @@ async function runSentiment(): Promise<void> {
   await classifyUnanalyzedComments(100).catch((e) =>
     console.error('[Sentiment]', e)
   );
-  // Negative share can only move once new comments are classified — check right after.
-  await checkNegativeSentimentSpikes().catch((e) => console.error('[NegativeSpike]', e));
 }
 
 async function runThemeClassification(): Promise<void> {
@@ -346,6 +344,18 @@ if (wantCore) cron.schedule(cronOf('tiktokSpikeDigest', '0 18 * * *'), () => {
   ifEnabled('tiktokSpikeDigest', async () => {
     await withLock('tiktok-spike-digest', sendTikTokDailySpikeDigest);
   }).catch((e) => console.error('[Cron] tiktok spike digest error:', e));
+}, {
+  timezone: 'Asia/Bangkok',
+});
+
+// 07:00 / 12:00 / 18:00 Bangkok — LINE negative sentiment spike: over-threshold
+// brands (24h negative share) + their Top 5 negative comments. Fixed rounds
+// instead of after every sentiment pass, so it pushes at most 3x/day and
+// never overnight. Sends nothing when no brand is over the threshold.
+if (wantCore) cron.schedule(cronOf('negativeSpikeDigest', '0 7,12,18 * * *'), () => {
+  ifEnabled('negativeSpikeDigest', async () => {
+    await withLock('negative-spike-digest', async () => { await checkNegativeSentimentSpikes(); });
+  }).catch((e) => console.error('[Cron] negative spike digest error:', e));
 }, {
   timezone: 'Asia/Bangkok',
 });

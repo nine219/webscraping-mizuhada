@@ -287,7 +287,7 @@ XHS Feed/Search (6h)  → xhs_posts (+ comments → social_comments platform='xi
 classifyUnanalyzedComments()  — ONE Gemini call per batch does:
    sentiment + score + topic + urgency(neg only) + brand_relevance + Thai translation
            ↓
-checkNegativeSentimentSpikes() — right after classification
+checkNegativeSentimentSpikes() — own cron, 07:00/12:00/18:00
 detectSpikes()/detectTwitterSpikes() — after scrapes / stats refresh
            ↓
 LINE: spike alerts, urgent-negative alerts, morning digest (07:00),
@@ -573,7 +573,7 @@ Two client stacks, one usage ledger:
 
 **X** — `detectTwitterSpikes()` (after 3h stats refresh): same shape, `x*` thresholds (10k/50k views — unmeasured guesses, ~1/10 TikTok scale).
 
-**Negative sentiment** — `checkNegativeSentimentSpikes()` after each sentiment run: alerts when negative % > 35. Plus `alertUrgentNegativeComments()` per high-urgency comment.
+**Negative sentiment** — `checkNegativeSentimentSpikes()` on its own cron (`negativeSpikeDigest`, default 07:00/12:00/18:00): if any own brand's 24h negative share ≥ threshold (default 35%, min 5 comments), sends one bubble with those brands + Top 5 negative comments (U5→U3, topic สุขภาพ→คุณภาพ→อื่นๆ) linked to their posts. Plus `alertUrgentNegativeComments()` per high-urgency comment.
 
 ---
 

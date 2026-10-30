@@ -254,7 +254,7 @@ export default function SchedulesTab({ settings, update }: { settings: ScheduleS
   const jobs: Array<keyof ScheduleSettings> = [
     'sentiment', 'tiktokFeed', 'tiktokSearch', 'tiktokStatsRefresh', 'instagram',
     'twitterSearch', 'twitterComments', 'twitterStatsRefresh', 'campaignSync',
-    'cleanup', 'morningDigest', 'weeklyDigest', 'tiktokSpikeDigest',
+    'cleanup', 'morningDigest', 'weeklyDigest', 'tiktokSpikeDigest', 'negativeSpikeDigest',
   ];
   return (
     <Section title="Cron jobs" desc="Enable/disable picks up within 60s. Editing a schedule requires `pm2 restart scheduler` to take effect.">
