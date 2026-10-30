@@ -1,6 +1,6 @@
 import { socialQuery as query } from '../db/social-client';
 import { sendLineFlex, Flex, FLEX_COLORS as C, truncateText as truncate, kpiTile, platformColor, platformStripe, isMultiColorPlatform, sanitizeCarousel } from '../alerts/line';
-import { getThresholds } from '../config/settings-loader';
+import { getThresholds, loadSettings } from '../config/settings-loader';
 
 export interface SpikeResult {
   postId: string;
@@ -28,6 +28,33 @@ export interface SpikedPostRow {
   author_handle: string | null;
   tiktok_handle: string | null;
   posted_at: string | null;
+  source_type: string | null;
+}
+
+// ── Official-account exclusion ──────────────────────────────────────────────
+// Spike/resurgence alerts (real-time + digests) are about UGC going viral, not
+// the brand's own posts. Official = anything not from keyword search (feed /
+// legacy 'profile' rows are always the brand's own handle), plus search hits
+// whose author is an own handle (settings ownHandlesTiktok + brands.tiktok_handle).
+// spike_flag itself still gets set on official posts so the dashboard keeps them.
+
+export async function getOfficialTiktokHandles(): Promise<string[]> {
+  const fromSettings = (await loadSettings().catch(() => null))?.keywords.ownHandlesTiktok ?? [];
+  const fromBrands = await query<{ h: string }>(
+    `SELECT tiktok_handle AS h FROM brands WHERE tiktok_handle IS NOT NULL AND tiktok_handle <> ''`,
+  );
+  const norm = (h: string) => h.trim().replace(/^@/, '').toLowerCase();
+  return [...new Set([...fromSettings, ...fromBrands.map((r) => r.h)].map(norm).filter(Boolean))];
+}
+
+/** SQL predicate: tiktok_posts row `alias` is NOT from an official account. `handlesParam` is a text[] placeholder like `$2`. */
+export function nonOfficialTiktokSql(alias: string, handlesParam: string): string {
+  return `(${alias}.source_type = 'search' AND LOWER(COALESCE(${alias}.author_handle, '')) <> ALL(${handlesParam}::text[]))`;
+}
+
+function isOfficialPost(post: SpikedPostRow, officialHandles: Set<string>): boolean {
+  if (post.source_type !== 'search') return true;
+  return !!post.author_handle && officialHandles.has(post.author_handle.toLowerCase());
 }
 
 // LINE alerts only fire for posts published within this window — an old post
@@ -151,7 +178,7 @@ async function evaluateSpikesForBrand(brandId: number, brandSlug: string): Promi
        AND tp.engagement_rate IS NOT NULL
        AND ${qualifies}
      RETURNING tp.post_id, tp.engagement_rate, tp.caption, tp.views, tp.likes, tp.shares, tp.comments_count,
-               tp.post_url, tp.author_handle, b.tiktok_handle, tp.posted_at`,
+               tp.post_url, tp.author_handle, b.tiktok_handle, tp.posted_at, tp.source_type`,
     params,
   );
 
@@ -200,7 +227,7 @@ async function detectResurgence(brandId: number): Promise<SpikedPostRow[]> {
        AND tp.views >= tp.last_alert_views * ${1 + RESURGENCE_GROWTH_PCT}
        AND tp.views - tp.last_alert_views >= ${RESURGENCE_MIN_VIEWS_DELTA}
      RETURNING tp.post_id, tp.engagement_rate, tp.caption, tp.views, tp.likes, tp.shares, tp.comments_count,
-               tp.post_url, tp.author_handle, b.tiktok_handle, tp.posted_at`,
+               tp.post_url, tp.author_handle, b.tiktok_handle, tp.posted_at, tp.source_type`,
     [brandId],
   );
 }
@@ -218,11 +245,13 @@ export async function detectSpikes(brandId: number, brandSlug: string): Promise<
 
   const { newlyFlagged } = await evaluateSpikesForBrand(brandId, brandSlug);
   const resurging = await detectResurgence(brandId);
+  const officialHandles = new Set(await getOfficialTiktokHandles());
 
   const results: SpikeResult[] = [];
 
   for (const post of newlyFlagged) {
     if (!isWithinAlertWindow(post.posted_at)) continue; // flagged in DB, but too old to page anyone about
+    if (isOfficialPost(post, officialHandles)) continue; // flagged in DB, but brand's own post — not a UGC alert
 
     const engRate = parseFloat(post.engagement_rate);
     const views   = parseInt(post.views, 10);
@@ -240,6 +269,7 @@ export async function detectSpikes(brandId: number, brandSlug: string): Promise<
   // the age cap above only exists to stop a stale post's *first* discovery
   // from reading as breaking news.
   for (const post of resurging) {
+    if (isOfficialPost(post, officialHandles)) continue;
     const engRate = parseFloat(post.engagement_rate);
     const views   = parseInt(post.views, 10);
     const rule: 'viral' | 'high-engagement' =

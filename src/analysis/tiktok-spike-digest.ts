@@ -1,4 +1,5 @@
 import { socialQuery } from '../db/social-client';
+import { getOfficialTiktokHandles, nonOfficialTiktokSql } from './spike-detection';
 import { sendLineFlex, Flex, FLEX_COLORS as C, platformStripe, truncateText as truncate, sanitizeCarousel } from '../alerts/line';
 
 const TOP_N = 5;
@@ -31,6 +32,7 @@ const RANK_MEDALS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
  * anyone.
  */
 export async function sendTikTokDailySpikeDigest(): Promise<void> {
+  const officialHandles = await getOfficialTiktokHandles();
   const rows = await socialQuery<SpikedRow>(
     `SELECT b.name AS brand_name, tp.caption, tp.views::text, tp.likes::text,
             tp.engagement_rate::text,
@@ -49,8 +51,10 @@ export async function sendTikTokDailySpikeDigest(): Promise<void> {
        -- on spike_detected_at alone would miss resurgences on posts that
        -- first spiked on an earlier day.
        AND (tp.last_alert_at AT TIME ZONE 'Asia/Bangkok')::date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
+       AND ${nonOfficialTiktokSql('tp', '$1')}
      ORDER BY tp.views DESC
      LIMIT ${TOP_N}`,
+    [officialHandles],
   );
 
   if (rows.length === 0) {
