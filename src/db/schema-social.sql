@@ -496,6 +496,10 @@ BEGIN
   DELETE FROM ai_usage_log     WHERE created_at    < NOW() - INTERVAL '6 months';
   GET DIAGNOSTICS n = ROW_COUNT; total := total + n;
 
+  -- View history only feeds the 24h-gain digest — a week of tail is plenty.
+  DELETE FROM tiktok_view_snapshots WHERE captured_at < NOW() - INTERVAL '8 days';
+  GET DIAGNOSTICS n = ROW_COUNT; total := total + n;
+
   -- Finished scrape jobs are ephemeral status records, not data — a 7-day tail
   -- is plenty for the dashboard's recent-jobs list. Never touch unfinished
   -- ('pending'/'running') rows.
@@ -637,3 +641,44 @@ DROP INDEX IF EXISTS idx_ig_posts_spike;
 ALTER TABLE instagram_posts DROP COLUMN IF EXISTS spike_flag;
 ALTER TABLE instagram_posts DROP COLUMN IF EXISTS spike_detected_at;
 ALTER TABLE instagram_posts DROP COLUMN IF EXISTS watchlist;
+
+-- TikTok view history — powers the 18:00 "Top 5 performance" LINE digest
+-- (tiktok-spike-digest.ts), which ranks posts by views GAINED in the last 24h
+-- rather than total views. tiktok_posts only holds the latest count, so a
+-- trigger snapshots views whenever a feed/search upsert inserts a post or
+-- changes its views (no scraper code involved). views = 0 is skipped — a
+-- missing API stat would otherwise become a fake 0 baseline and make the
+-- next real count look like a huge jump. Pruned after 8 days in
+-- cleanup_social_old_data() (the digest only ever looks back 24h).
+CREATE TABLE IF NOT EXISTS tiktok_view_snapshots (
+  tiktok_post_id INT         NOT NULL REFERENCES tiktok_posts(id) ON DELETE CASCADE,
+  captured_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  views          BIGINT      NOT NULL,
+  PRIMARY KEY (tiktok_post_id, captured_at)
+);
+CREATE INDEX IF NOT EXISTS idx_tiktok_view_snapshots_captured ON tiktok_view_snapshots(captured_at);
+
+CREATE OR REPLACE FUNCTION snapshot_tiktok_views() RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO tiktok_view_snapshots (tiktok_post_id, captured_at, views)
+  VALUES (NEW.id, NOW(), NEW.views)
+  ON CONFLICT DO NOTHING;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_tiktok_views_insert ON tiktok_posts;
+CREATE TRIGGER trg_tiktok_views_insert AFTER INSERT ON tiktok_posts
+  FOR EACH ROW WHEN (NEW.views > 0) EXECUTE FUNCTION snapshot_tiktok_views();
+DROP TRIGGER IF EXISTS trg_tiktok_views_update ON tiktok_posts;
+CREATE TRIGGER trg_tiktok_views_update AFTER UPDATE OF views ON tiktok_posts
+  FOR EACH ROW WHEN (NEW.views > 0 AND NEW.views IS DISTINCT FROM OLD.views)
+  EXECUTE FUNCTION snapshot_tiktok_views();
+
+-- One-time seed (only while the table is empty): each post's current views at
+-- its last scrape time, so posts last scraped >24h ago have a baseline on day one.
+INSERT INTO tiktok_view_snapshots (tiktok_post_id, captured_at, views)
+SELECT id, scraped_at, views FROM tiktok_posts
+WHERE views > 0 AND scraped_at IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM tiktok_view_snapshots)
+ON CONFLICT DO NOTHING;

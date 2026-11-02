@@ -4,13 +4,15 @@ import { sendLineFlex, Flex, FLEX_COLORS as C, platformStripe, truncateText as t
 
 const TOP_N = 5;
 
-interface SpikedRow {
+interface PerformanceRow {
   brand_name: string;
   caption: string | null;
   views: string;
   likes: string;
   engagement_rate: string | null;
   post_url: string | null;
+  gained: string;
+  is_new: boolean;
 }
 
 function fmt(n: number): string {
@@ -22,43 +24,54 @@ function fmt(n: number): string {
 const RANK_MEDALS = ['🥇', '🥈', '🥉', '4️⃣', '5️⃣'];
 
 /**
- * Daily 18:00 LINE summary of the day's spiked TikTok posts (own brands) —
- * any post age qualifies, the only filter is last_alert_at falling on today's
- * Bangkok calendar date (covers both a fresh spike and a same-day resurgence
- * on an older post — see the query comment below). Separate from the
- * real-time spike alert (spike-detection.ts's spikeBubble, fired the moment a
- * spike is found) — this is the end-of-day roundup, capped at the top 5 by
- * views. Sends nothing if no post spiked today — a quiet day shouldn't page
- * anyone.
+ * Daily 18:00 LINE "TikTok Top 5 Performance" — the 5 UGC posts (own brands,
+ * official accounts excluded) that gained the most views in the last 24h,
+ * old and new posts alike:
+ *   - ใหม่ (posted <24h ago): every view counts as gained (baseline 0)
+ *   - เก่า (posted ≥24h ago): views now − the latest tiktok_view_snapshots
+ *     row at or before 24h ago; if the post has no snapshot that old (first
+ *     seen within the window, or right after the snapshot table shipped),
+ *     falls back to its earliest snapshot — growth since we first saw it.
+ * Only posts re-scraped in the last 24h can have moved, so that bounds the
+ * scan. Separate from the real-time spike alert (spike-detection.ts). Sends
+ * nothing if no post gained views — a quiet day shouldn't page anyone.
  */
 export async function sendTikTokDailySpikeDigest(): Promise<void> {
   const officialHandles = await getOfficialTiktokHandles();
-  const rows = await socialQuery<SpikedRow>(
-    `SELECT b.name AS brand_name, tp.caption, tp.views::text, tp.likes::text,
-            tp.engagement_rate::text,
-            COALESCE(
-              NULLIF(tp.post_url, ''),
-              CASE WHEN tp.author_handle IS NOT NULL OR b.tiktok_handle IS NOT NULL
-                THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
-                ELSE NULL END
-            ) AS post_url
-     FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
-     WHERE b.type = 'own' AND tp.spike_flag = true
-       -- last_alert_at covers both an initial spike (set alongside
-       -- spike_detected_at the moment it's first flagged) AND a same-day
-       -- resurgence on an older post (detectResurgence() only ever touches
-       -- last_alert_at/last_alert_views, never spike_detected_at) — filtering
-       -- on spike_detected_at alone would miss resurgences on posts that
-       -- first spiked on an earlier day.
-       AND (tp.last_alert_at AT TIME ZONE 'Asia/Bangkok')::date = (NOW() AT TIME ZONE 'Asia/Bangkok')::date
-       AND ${nonOfficialTiktokSql('tp', '$1')}
-     ORDER BY tp.views DESC
+  const rows = await socialQuery<PerformanceRow>(
+    `SELECT * FROM (
+       SELECT b.name AS brand_name, tp.caption, tp.views::text, tp.likes::text,
+              tp.engagement_rate::text,
+              COALESCE(
+                NULLIF(tp.post_url, ''),
+                CASE WHEN tp.author_handle IS NOT NULL OR b.tiktok_handle IS NOT NULL
+                  THEN 'https://www.tiktok.com/@' || COALESCE(NULLIF(tp.author_handle,''), b.tiktok_handle) || '/video/' || tp.post_id
+                  ELSE NULL END
+              ) AS post_url,
+              (tp.posted_at >= NOW() - interval '24 hours') AS is_new,
+              tp.views - COALESCE(
+                CASE WHEN tp.posted_at >= NOW() - interval '24 hours' THEN 0 END,
+                (SELECT s.views FROM tiktok_view_snapshots s
+                  WHERE s.tiktok_post_id = tp.id AND s.captured_at <= NOW() - interval '24 hours'
+                  ORDER BY s.captured_at DESC LIMIT 1),
+                (SELECT s.views FROM tiktok_view_snapshots s
+                  WHERE s.tiktok_post_id = tp.id
+                  ORDER BY s.captured_at ASC LIMIT 1),
+                tp.views
+              ) AS gained
+       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
+       WHERE b.type = 'own'
+         AND tp.scraped_at >= NOW() - interval '24 hours'
+         AND ${nonOfficialTiktokSql('tp', '$1')}
+     ) sub
+     WHERE sub.gained > 0
+     ORDER BY sub.gained DESC
      LIMIT ${TOP_N}`,
     [officialHandles],
   );
 
   if (rows.length === 0) {
-    console.log('[TikTokSpikeDigest] No posts spiked today — skipping.');
+    console.log('[TikTokPerformanceDigest] No post gained views in the last 24h — skipping.');
     return;
   }
 
@@ -69,16 +82,23 @@ export async function sendTikTokDailySpikeDigest(): Promise<void> {
   const items: Flex[] = rows.map((r, i) => {
     const views = parseInt(r.views, 10);
     const likes = parseInt(r.likes, 10);
+    const gained = parseInt(r.gained, 10);
     const engRate = r.engagement_rate ? parseFloat(r.engagement_rate) : null;
     const box: Flex = {
       type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'none' : 'lg',
       contents: [
-        { type: 'text', text: `${RANK_MEDALS[i] ?? `${i + 1}.`} ${r.brand_name}`, size: 'sm', weight: 'bold', color: C.navy },
+        {
+          type: 'box', layout: 'horizontal', contents: [
+            { type: 'text', text: `${RANK_MEDALS[i] ?? `${i + 1}.`} ${r.brand_name}`, size: 'sm', weight: 'bold', color: C.navy, flex: 1 },
+            { type: 'text', text: r.is_new ? 'ใหม่' : 'เก่า', size: 'xxs', weight: 'bold', color: r.is_new ? C.pos : C.muted, flex: 0, gravity: 'center' },
+          ],
+        },
         { type: 'text', text: truncate(r.caption || '(ไม่มีแคปชั่น)'), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
+        { type: 'text', text: `🚀 +${fmt(gained)} วิว ใน 24 ชม.`, size: 'sm', weight: 'bold', color: C.navy, margin: 'xs' },
         {
           type: 'box', layout: 'horizontal', margin: 'xs',
           contents: [
-            { type: 'text', text: `👁 ${fmt(views)}`, size: 'xs', color: C.navy, weight: 'bold', flex: 0 },
+            { type: 'text', text: `👁 ${fmt(views)}`, size: 'xs', color: C.muted, flex: 0 },
             { type: 'text', text: `❤️ ${fmt(likes)}`, size: 'xs', color: C.muted, flex: 0, margin: 'md' },
             ...(engRate !== null ? [{ type: 'text', text: `📈 ${engRate.toFixed(2)}%`, size: 'xs', color: C.muted, flex: 0, margin: 'md' } as Flex] : []),
           ],
@@ -96,16 +116,15 @@ export async function sendTikTokDailySpikeDigest(): Promise<void> {
       type: 'box', layout: 'vertical', backgroundColor: '#000000', paddingAll: '16px',
       contents: [
         platformStripe('tiktok', '4px'),
-        { type: 'text', text: '🏆 TikTok Top 5 Spiked วันนี้', color: C.white, weight: 'bold', size: 'lg', margin: 'md' },
-        { type: 'text', text: dateStr, color: '#25F4EE', size: 'sm', margin: 'xs' },
+        { type: 'text', text: '🏆 TikTok Top 5 Performance วันนี้', color: C.white, weight: 'bold', size: 'lg', margin: 'md', wrap: true },
+        { type: 'text', text: `${dateStr} · วัดจากวิวที่เพิ่มใน 24 ชม.`, color: '#25F4EE', size: 'xs', margin: 'xs', wrap: true },
       ],
     },
     body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '16px', contents: items },
   };
 
   const [safeBubble] = sanitizeCarousel([bubble]);
-  const topBrand = rows[0].brand_name;
-  const altText = `🏆 TikTok Top 5 Spiked ${dateStr} — อันดับ 1: ${topBrand} (👁 ${fmt(parseInt(rows[0].views, 10))})`;
+  const altText = `🏆 TikTok Top 5 Performance ${dateStr} — อันดับ 1: ${rows[0].brand_name} (+${fmt(parseInt(rows[0].gained, 10))} วิว)`;
 
   await sendLineFlex(altText, safeBubble);
 }

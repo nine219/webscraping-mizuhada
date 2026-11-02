@@ -317,7 +317,7 @@ Source: `src/scheduler/cron.ts`. All times Asia/Bangkok. Cron expressions come f
 | Daily 03:00 | `0 3 * * *` | `runSocialCleanup()` — purge > 6 months | — |
 | Daily 07:00 | `0 7 * * *` | LINE morning digest | `morning-digest` |
 | Mondays 08:00 | `0 8 * * 1` | LINE weekly digest | — |
-| Daily 18:00 | `0 18 * * *` | LINE TikTok top-5 spike digest (DB-only; sends nothing if none spiked today) | `tiktok-spike-digest` |
+| Daily 18:00 | `0 18 * * *` | LINE TikTok Top 5 Performance — UGC posts ranked by views gained in 24h (DB-only; sends nothing if none gained) | `tiktok-spike-digest` |
 
 **XHS is not manual-only** — real cron above, only in `scraper-xhs` host process (`wantXhs`, gated on role). Never ran under the legacy all-in-one scheduler. Still triggerable on demand via the job queue.
 
@@ -554,7 +554,7 @@ Two client stacks, one usage ledger:
 
 **`comments.ts`** — noise filters: `NOISE_PATTERNS`, `isNoiseComment`, `isEmojiOnly`, `isMentionOnly`, `shouldKeepComment` (scrape-time), `noiseExcludeSql(column)` (query-time).
 
-**`tiktok-spike-digest.ts`** — `sendTikTokDailySpikeDigest()`: daily 18:00 LINE roundup of the day's top 5 spiked TikTok posts (own brands), any post age, gated on `spike_detected_at` falling today. Sends nothing on a quiet day.
+**`tiktok-spike-digest.ts`** — `sendTikTokDailySpikeDigest()`: daily 18:00 LINE "TikTok Top 5 Performance" — own-brand UGC posts (official accounts excluded), old and new alike, ranked by views gained in the last 24h. New (posted <24h) = all views; old = views now − latest `tiktok_view_snapshots` row ≤24h ago (fallback: earliest snapshot). Snapshots are written by a trigger on `tiktok_posts` views changes, pruned after 8 days. Sends nothing on a quiet day.
 
 **`campaign-report.ts`** — `getCampaignReport(id)`: engagement, sentiment split, reply/quote counts (`npm run report:campaign`).
 

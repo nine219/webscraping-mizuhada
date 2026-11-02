@@ -334,10 +334,10 @@ if (wantCore) cron.schedule(cronOf('morningDigest', '0 7 * * *'), () => {
   timezone: 'Asia/Bangkok',
 });
 
-// Daily 18:00 Bangkok — LINE roundup of today's top 5 spiked TikTok posts
-// (own brands). Any post age qualifies — gated on spike_detected_at falling
-// today, not posted_at — unlike the real-time spike alert in tiktok-search.ts/
-// tiktok-feed.ts (fires the moment a spike is found). DB-only, no Chrome, so
+// Daily 18:00 Bangkok — LINE "TikTok Top 5 Performance": own-brand UGC posts
+// of any age ranked by views gained in the last 24h (tiktok_view_snapshots),
+// unlike the real-time spike alert in tiktok-search.ts/tiktok-feed.ts
+// (fires the moment a spike is found). DB-only, no Chrome, so
 // this runs in scheduler-core like the other digests, not the scraper-tiktok
 // container. Sends nothing on a quiet day (see tiktok-spike-digest.ts).
 if (wantCore) cron.schedule(cronOf('tiktokSpikeDigest', '0 18 * * *'), () => {
