@@ -196,7 +196,9 @@ export async function fetchDigestData(brands: DigestBrand[], winStart: string, p
       postsByPlatform,
       sentiment,
       hashtags: countHashtags(mine),
-      topPosts: [...digestPosts].sort((x, y) => y.views - x.views).slice(0, TOP_N),
+      // UGC only — LINE alerts never surface the brand's own posts (official
+      // posts still count toward the posts/official KPIs above).
+      topPosts: digestPosts.filter((p) => !p.isOfficial).sort((x, y) => y.views - x.views).slice(0, TOP_N),
       spikeCount: countFor(spikeRows, b.id),
     };
   });
@@ -491,7 +493,7 @@ export function brandBubble(d: BrandDigest, periodLabel: string): Flex {
   );
 
   if (d.topPosts.length) {
-    body.push({ type: 'separator', margin: 'lg' }, sectionLabel(`🏆 Top ${d.topPosts.length} โพสต์ (ยอดวิว)`), ...postRows(d.topPosts, false));
+    body.push({ type: 'separator', margin: 'lg' }, sectionLabel(`🏆 Top ${d.topPosts.length} โพสต์ UGC (ยอดวิว)`), ...postRows(d.topPosts, false));
   }
 
   const bubble: Flex = {
