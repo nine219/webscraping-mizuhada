@@ -25,6 +25,9 @@ export interface DigestPost {
   post_url: string | null;
   author: string | null;
   isOfficial: boolean;
+  /** Set only on view-gain rankings: views gained in the window, and whether the post itself is newer than the window. */
+  gained?: number;
+  isNew?: boolean;
 }
 
 export interface BrandDigest {
@@ -39,6 +42,8 @@ export interface BrandDigest {
   sentiment: SentimentCounts;
   hashtags: TagCount[];
   topPosts: DigestPost[];
+  /** What topPosts is ranked by, for the section title, e.g. "วิวที่เพิ่มใน 24 ชม." or "ยอดวิว". */
+  topPostsBasis: string;
   spikeCount: number;
 }
 
@@ -63,6 +68,26 @@ const X_URL_SQL = `COALESCE(
   CASE WHEN b.twitter_handle IS NOT NULL OR twp.author_handle IS NOT NULL
     THEN 'https://x.com/' || COALESCE(NULLIF(twp.author_handle,''), b.twitter_handle) || '/status/' || twp.post_id
     ELSE NULL END)`;
+
+/**
+ * Views a TikTok post gained since `since` (constant SQL timestamp
+ * expression), from tiktok_view_snapshots. Shared by the 18:00 Top 5
+ * Performance card and the morning digest's per-brand Top 5:
+ *   - posted after `since` (new): every view counts (baseline 0)
+ *   - older: views now − latest snapshot at/before `since`; with no snapshot
+ *     that old (first seen inside the window), the earliest snapshot.
+ */
+export function viewGainSql(alias: string, since: string): string {
+  return `${alias}.views - COALESCE(
+    CASE WHEN ${alias}.posted_at >= ${since} THEN 0 END,
+    (SELECT s.views FROM tiktok_view_snapshots s
+      WHERE s.tiktok_post_id = ${alias}.id AND s.captured_at <= ${since}
+      ORDER BY s.captured_at DESC LIMIT 1),
+    (SELECT s.views FROM tiktok_view_snapshots s
+      WHERE s.tiktok_post_id = ${alias}.id
+      ORDER BY s.captured_at ASC LIMIT 1),
+    ${alias}.views)`;
+}
 
 /** Own brands in digest order: MizuMi, Bomi, Gentle Colors, then any others by name. */
 export async function fetchDigestBrands(): Promise<DigestBrand[]> {
@@ -120,14 +145,21 @@ function countHashtags(posts: { hashtags: string[] | null }[], limit = TOP_N): T
  * Every own-brand post (TikTok, plus X for MizuMi — docs/scope-x-campaigns.md
  * decision 10) posted in the window, aggregated per brand: post / UGC /
  * official counts, views, comment sentiment (all platforms), hashtags, Top 5
- * posts by views. Official = TikTok feed rows or an own handle found via
+ * UGC posts by views. Official = TikTok feed rows or an own handle found via
  * search (same rule as the spike alerts); X official = source_type 'feed'.
+ *
+ * With `gainSince`, each brand's Top 5 instead uses the 18:00 Top 5
+ * Performance rule: TikTok UGC posts of any age, ranked by views gained since
+ * then (viewGainSql) — so an old post going viral again shows up too.
  */
-export async function fetchDigestData(brands: DigestBrand[], winStart: string, priorStart: string): Promise<DigestData> {
+export async function fetchDigestData(
+  brands: DigestBrand[], winStart: string, priorStart: string,
+  gainSince?: { sql: string; label: string },
+): Promise<DigestData> {
   const ids = brands.map((b) => b.id);
   const handles = await getOfficialTiktokHandles();
 
-  const [posts, sentimentRows, prevUgcRows, spikeRows] = await Promise.all([
+  const [posts, sentimentRows, prevUgcRows, spikeRows, gainRows] = await Promise.all([
     socialQuery<PostRow>(
       `SELECT tp.brand_id, b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
               tp.views::text, tp.likes::text, tp.engagement_rate::text, tp.hashtags, tp.author_handle,
@@ -167,6 +199,29 @@ export async function fetchDigestData(brands: DigestBrand[], winStart: string, p
        GROUP BY tp.brand_id`,
       [ids, handles],
     ),
+    gainSince
+      ? socialQuery<Omit<PostRow, 'hashtags'> & { gained: string; is_new: boolean }>(
+        `SELECT * FROM (
+           SELECT g.*, ROW_NUMBER() OVER (PARTITION BY g.brand_id ORDER BY g.gained DESC) AS rn
+           FROM (
+             SELECT tp.brand_id, b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
+                    tp.views::text, tp.likes::text, tp.engagement_rate::text, tp.author_handle,
+                    ${TIKTOK_URL_SQL} AS post_url, false AS is_official,
+                    (tp.posted_at >= ${gainSince.sql}) AS is_new,
+                    ${viewGainSql('tp', gainSince.sql)} AS gained
+             FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
+             WHERE tp.brand_id = ANY($1::int[])
+               -- only posts re-scraped in the window can have moved
+               AND tp.scraped_at >= ${gainSince.sql}
+               AND ${nonOfficialTiktokSql('tp', '$2')}
+           ) g
+           WHERE g.gained > 0
+         ) r
+         WHERE r.rn <= ${TOP_N}
+         ORDER BY r.brand_id, r.rn`,
+        [ids, handles],
+      )
+      : Promise.resolve(null),
   ]);
 
   const countFor = (rows: { brand_id: number; cnt: string }[], id: number) =>
@@ -198,7 +253,12 @@ export async function fetchDigestData(brands: DigestBrand[], winStart: string, p
       hashtags: countHashtags(mine),
       // UGC only — LINE alerts never surface the brand's own posts (official
       // posts still count toward the posts/official KPIs above).
-      topPosts: digestPosts.filter((p) => !p.isOfficial).sort((x, y) => y.views - x.views).slice(0, TOP_N),
+      topPosts: gainRows
+        ? gainRows.filter((r) => r.brand_id === b.id).map((r) => ({
+          ...toDigestPost(r), gained: parseInt(r.gained, 10) || 0, isNew: r.is_new,
+        }))
+        : digestPosts.filter((p) => !p.isOfficial).sort((x, y) => y.views - x.views).slice(0, TOP_N),
+      topPostsBasis: gainSince ? `วิวที่เพิ่ม${gainSince.label}` : 'ยอดวิว',
       spikeCount: countFor(spikeRows, b.id),
     };
   });
@@ -363,7 +423,8 @@ function postRows(posts: DigestPost[], showBrand: boolean): Flex[] {
   const rows: Flex[] = [];
   posts.forEach((p, i) => {
     const tag = p.isOfficial ? 'ทางการ' : `UGC${p.author ? ` @${p.author}` : ''}`;
-    const label = [showBrand ? p.brand_name : null, p.platform, tag].filter(Boolean).join(' · ');
+    const age = p.isNew === undefined ? null : p.isNew ? 'ใหม่' : 'เก่า';
+    const label = [showBrand ? p.brand_name : null, p.platform, tag, age].filter(Boolean).join(' · ');
     const stats = [`👁 ${fmt(p.views)}`, `❤️ ${fmt(p.likes)}`];
     if (p.engagementRate != null) stats.push(`📈 ${p.engagementRate.toFixed(2)}%`);
     const box: Flex = {
@@ -371,7 +432,12 @@ function postRows(posts: DigestPost[], showBrand: boolean): Flex[] {
       contents: [
         { type: 'text', text: `${i + 1}. ${label}`, size: 'xxs', weight: 'bold', color: platformColor(p.platform), wrap: true },
         { type: 'text', text: truncate(p.caption || '(ไม่มีแคปชั่น)'), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
-        { type: 'text', text: stats.join('   '), size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
+        ...(p.gained !== undefined
+          ? [{ type: 'text', text: `🚀 +${fmt(p.gained)} วิว`, size: 'sm', color: C.navy, weight: 'bold', margin: 'xs' } as Flex]
+          : []),
+        p.gained !== undefined
+          ? { type: 'text', text: stats.join('   '), size: 'xs', color: C.muted, margin: 'xs' }
+          : { type: 'text', text: stats.join('   '), size: 'xs', color: C.navy, weight: 'bold', margin: 'xs' },
       ],
     };
     if (p.post_url && /^https?:\/\//.test(p.post_url)) box.action = { type: 'uri', label: 'ดูโพสต์', uri: p.post_url };
@@ -493,7 +559,7 @@ export function brandBubble(d: BrandDigest, periodLabel: string): Flex {
   );
 
   if (d.topPosts.length) {
-    body.push({ type: 'separator', margin: 'lg' }, sectionLabel(`🏆 Top ${d.topPosts.length} โพสต์ UGC (ยอดวิว)`), ...postRows(d.topPosts, false));
+    body.push({ type: 'separator', margin: 'lg' }, sectionLabel(`🏆 Top ${d.topPosts.length} โพสต์ UGC (${d.topPostsBasis})`), ...postRows(d.topPosts, false));
   }
 
   const bubble: Flex = {

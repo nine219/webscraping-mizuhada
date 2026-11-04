@@ -1,5 +1,6 @@
 import { socialQuery } from '../db/social-client';
 import { getOfficialTiktokHandles, nonOfficialTiktokSql } from './spike-detection';
+import { viewGainSql } from './digest-common';
 import { sendLineFlex, Flex, FLEX_COLORS as C, platformStripe, truncateText as truncate, sanitizeCarousel } from '../alerts/line';
 
 const TOP_N = 5;
@@ -49,16 +50,7 @@ export async function sendTikTokDailySpikeDigest(): Promise<void> {
                   ELSE NULL END
               ) AS post_url,
               (tp.posted_at >= NOW() - interval '24 hours') AS is_new,
-              tp.views - COALESCE(
-                CASE WHEN tp.posted_at >= NOW() - interval '24 hours' THEN 0 END,
-                (SELECT s.views FROM tiktok_view_snapshots s
-                  WHERE s.tiktok_post_id = tp.id AND s.captured_at <= NOW() - interval '24 hours'
-                  ORDER BY s.captured_at DESC LIMIT 1),
-                (SELECT s.views FROM tiktok_view_snapshots s
-                  WHERE s.tiktok_post_id = tp.id
-                  ORDER BY s.captured_at ASC LIMIT 1),
-                tp.views
-              ) AS gained
+              ${viewGainSql('tp', "NOW() - interval '24 hours'")} AS gained
        FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
        WHERE b.type = 'own'
          AND tp.scraped_at >= NOW() - interval '24 hours'

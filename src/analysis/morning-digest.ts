@@ -8,13 +8,15 @@ import {
 // Constant SQL expressions — no user input, safe to interpolate.
 const WIN_START = "(date_trunc('day', now() AT TIME ZONE 'Asia/Bangkok') - interval '1 day') AT TIME ZONE 'Asia/Bangkok'";
 const PRIOR_START = "(date_trunc('day', now() AT TIME ZONE 'Asia/Bangkok') - interval '2 day') AT TIME ZONE 'Asia/Bangkok'";
+// Per-brand Top 5 window — same rule as the 18:00 Top 5 Performance card.
+const GAIN_SINCE = "now() - interval '24 hours'";
 
 export async function sendMorningDigest(): Promise<void> {
   console.log('[Digest] Building morning digest...');
 
   const brands = await fetchDigestBrands();
   const [data, urgent, wave] = await Promise.all([
-    fetchDigestData(brands, WIN_START, PRIOR_START),
+    fetchDigestData(brands, WIN_START, PRIOR_START, { sql: GAIN_SINCE, label: 'ใน 24 ชม.' }),
     fetchUrgentComments(WIN_START),
     fetchRideTheWave(WIN_START),
   ]);
