@@ -233,6 +233,18 @@ export function deltaBadge(cur: number, prev: number): { text: string; color: st
     : { text: `▼${Math.abs(pct)}%`, color: FLEX_COLORS.neg };
 }
 
+/**
+ * Plain-Thai label for a negative comment's urgency (1–5). LINE readers
+ * outside the team don't know the internal U1–U5 scale, so alerts show this
+ * instead of "U4"/"U5".
+ */
+export function urgencyLabel(u: number): string {
+  if (u >= 5) return '🔴 ร้ายแรง';
+  if (u === 4) return '🟠 เร่งด่วน';
+  if (u === 3) return '🟡 ควรติดตาม';
+  return 'ทั่วไป';
+}
+
 export function kpiTile(value: string, label: string, badge?: { text: string; color: string } | null): Flex {
   const valueRow: Flex[] = [{ type: 'text', text: value, weight: 'bold', size: 'lg', color: FLEX_COLORS.navy }];
   if (badge) valueRow.push({ type: 'text', text: badge.text, size: 'xs', color: badge.color, gravity: 'bottom', margin: 'xs', flex: 0 });

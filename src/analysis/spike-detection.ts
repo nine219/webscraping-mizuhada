@@ -1,5 +1,5 @@
 import { socialQuery as query } from '../db/social-client';
-import { sendLineFlex, Flex, FLEX_COLORS as C, truncateText as truncate, kpiTile, platformColor, platformStripe, isMultiColorPlatform, sanitizeCarousel } from '../alerts/line';
+import { sendLineFlex, Flex, FLEX_COLORS as C, truncateText as truncate, kpiTile, platformColor, platformStripe, isMultiColorPlatform, sanitizeCarousel, urgencyLabel } from '../alerts/line';
 import { getThresholds, loadSettings } from '../config/settings-loader';
 
 export interface SpikeResult {
@@ -618,14 +618,14 @@ function negativeSpikeBubble(brands: NegativeSpikeBrand[], thresholdPct: number,
   }));
   body.push({ type: 'text', text: `คอมเมนต์ 24 ชม. · Threshold ${thresholdPct}%`, size: 'xxs', color: C.muted, margin: 'sm' });
   body.push({ type: 'separator', margin: 'lg' });
-  body.push({ type: 'text', text: `Top ${NEGATIVE_SPIKE_TOP_N} คอมเมนต์ลบ (U5→U3 · สุขภาพ→คุณภาพ→อื่นๆ)`, size: 'xs', color: C.muted, margin: 'lg', wrap: true });
+  body.push({ type: 'text', text: `Top ${NEGATIVE_SPIKE_TOP_N} คอมเมนต์ลบ (เรียงจากร้ายแรงสุด · สุขภาพ→คุณภาพ→อื่นๆ)`, size: 'xs', color: C.muted, margin: 'lg', wrap: true });
 
   if (comments.length === 0) {
-    body.push({ type: 'text', text: `ไม่มีคอมเมนต์ระดับ U${NEGATIVE_SPIKE_MIN_URGENCY} ขึ้นไป`, size: 'xs', color: C.text, margin: 'md' });
+    body.push({ type: 'text', text: 'ไม่มีคอมเมนต์ลบระดับ "ควรติดตาม" ขึ้นไป', size: 'xs', color: C.text, margin: 'md' });
   }
   comments.forEach((c, i) => {
     const rowContents: Flex[] = [
-      { type: 'text', text: `U${c.urgency} · ${c.topic || 'อื่นๆ'} · ${c.brand_name} · ${c.platform}`, size: 'xxs', weight: 'bold', color: urgencyColor(c.urgency), wrap: true },
+      { type: 'text', text: `${urgencyLabel(c.urgency)} · ${c.topic || 'อื่นๆ'} · ${c.brand_name} · ${c.platform}`, size: 'xxs', weight: 'bold', color: urgencyColor(c.urgency), wrap: true },
       { type: 'text', text: truncate(c.content), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
     ];
     const hasUrl = !!c.post_url && /^https?:\/\//.test(c.post_url);
@@ -682,7 +682,7 @@ export async function checkNegativeSentimentSpikes(): Promise<{ alerted: string[
   const comments = await fetchTopNegativeComments(brands.map((b) => b.brandId));
   const top = brands[0];
   const altText = `⚠️ Negative sentiment spike — ${brands.map((b) => `${b.brandName} ${b.negPct.toFixed(0)}%`).join(', ')}`
-    + (comments[0] ? ` · Top: U${comments[0].urgency} ${comments[0].topic || 'อื่นๆ'}` : '');
+    + (comments[0] ? ` · Top: ${urgencyLabel(comments[0].urgency)} ${comments[0].topic || 'อื่นๆ'}` : '');
   console.log(`[NegativeSpike] Alerting ${brands.length} brand(s), top ${top.brandName} ${top.negPct.toFixed(0)}%, ${comments.length} comment(s).`);
   await sendLineFlex(altText, negativeSpikeBubble(brands, thresholdPct, comments, bangkokStamp()));
 
@@ -716,7 +716,7 @@ function urgentNegativeBubble(row: UrgentNegativeRow): Flex {
     {
       type: 'box', layout: 'horizontal', spacing: 'sm',
       contents: [
-        kpiTile(`U${row.urgency}`, 'Urgency'),
+        kpiTile(urgencyLabel(row.urgency), 'ความรุนแรง'),
         kpiTile(row.platform, 'Platform'),
       ],
     },
@@ -778,7 +778,7 @@ export async function alertUrgentNegativeComments(rows: UrgentNegativeRow[]): Pr
     const chunk = qualifying.slice(i, i + CAROUSEL_MAX_BUBBLES);
     const bubbles = sanitizeCarousel(chunk.map(urgentNegativeBubble));
     const altText = chunk.length === 1
-      ? `🚨 Urgent negative comment — ${chunk[0].brand_name} (U${chunk[0].urgency})`
+      ? `🚨 Urgent negative comment — ${chunk[0].brand_name} (${urgencyLabel(chunk[0].urgency)})`
       : `🚨 ${chunk.length} urgent negative comments found`;
     const contents = bubbles.length === 1 ? bubbles[0] : { type: 'carousel', contents: bubbles };
     await sendLineFlex(altText, contents);

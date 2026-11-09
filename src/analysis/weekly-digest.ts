@@ -1,6 +1,6 @@
 import { sendLineTextThenFlex, sanitizeCarousel } from '../alerts/line';
 import {
-  fetchDigestBrands, fetchDigestData, fetchTopTopics, fetchUrgentComments, fetchRideTheWave,
+  fetchDigestBrands, fetchDigestData, fetchTopTopics, fetchUrgentComments, fetchTopViewGainers,
   brandBubble, needsAttentionBubble, rideTheWaveBubble, performanceBubble,
 } from './digest-common';
 
@@ -18,7 +18,8 @@ export async function sendWeeklyDigest(): Promise<void> {
     fetchDigestData(brands, WIN_START, PRIOR_START),
     fetchTopTopics(WIN_START),
     fetchUrgentComments(WIN_START, 10),
-    fetchRideTheWave(WIN_START),
+    // Weekly Ride the Wave = Top 5 by views gained this week (any post age).
+    fetchTopViewGainers(WIN_START),
   ]);
 
   const now = new Date();
@@ -30,8 +31,9 @@ export async function sendWeeklyDigest(): Promise<void> {
   const carousel = {
     type: 'carousel',
     contents: sanitizeCarousel([
-      needsAttentionBubble(bubbleOpts, urgent),
-      ...(wave.length ? [rideTheWaveBubble(wave)] : []),
+      // Same as the morning digest: no "all clear" bubble on a quiet week.
+      ...(urgent.length ? [needsAttentionBubble(bubbleOpts, urgent)] : []),
+      ...(wave.length ? [rideTheWaveBubble(wave, 'เรียงตามวิวที่เพิ่มใน 7 วัน')] : []),
       performanceBubble(bubbleOpts, data.brands, data.hashtags, topics),
       ...data.brands.map((d) => brandBubble(d, 'สัปดาห์นี้')),
     ]),

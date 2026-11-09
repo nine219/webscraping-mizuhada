@@ -597,7 +597,7 @@ No LINE account exists in this repo — has to be created externally:
 
 **`digest-common.ts`** — shared digest data + bubbles: `fetchBrandDigest`, `fetchTwitterStats`, `fetchTopPosts/Hashtags/Topics`, `fetchUrgentComments`, `fetchRecentSpikePosts`, `brandBubble`, `needsAttentionBubble`, `rideTheWaveBubble`, `performanceBubble`, `takeaway()`.
 
-**`morning-digest.ts`** (07:00) — yesterday's posts/UGC/engagement, urgent comments, spikes. Each brand bubble's Top 5 uses the 18:00 Top 5 Performance rule (TikTok UGC of any age, ranked by views gained in the last 24h via `viewGainSql`); weekly keeps Top 5 new UGC posts by total views. **`weekly-digest.ts`** (Mon 08:00) — weekly recap. Manual: `npm run digest:morning`, `send-weekly-digest.ts`.
+**`morning-digest.ts`** (07:00) — yesterday's posts/UGC/engagement, urgent comments, spikes. Each brand bubble's Top 5 uses the 18:00 Top 5 Performance rule (TikTok UGC of any age, ranked by views gained in the last 24h via `viewGainSql`); weekly keeps Top 5 new UGC posts by total views, but its Ride the Wave is `fetchTopViewGainers` (TikTok UGC, any age, ranked by views gained in 7 days) instead of spiked-by-engagement. Needs Attention is omitted when empty in both. LINE text shows urgency as plain Thai (`urgencyLabel`: ร้ายแรง/เร่งด่วน/ควรติดตาม), never U1–U5. **`weekly-digest.ts`** (Mon 08:00) — weekly recap. Manual: `npm run digest:morning`, `send-weekly-digest.ts`.
 
 ---
 

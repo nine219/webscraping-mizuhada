@@ -1,11 +1,12 @@
 import { socialQuery } from '../db/social-client';
 import { getOfficialTiktokHandles, nonOfficialTiktokSql } from './spike-detection';
-import { Flex, FLEX_COLORS as C, fmtCompact as fmt, truncateText as truncate, kpiTile, sentimentBar, deltaBadge, platformColor } from '../alerts/line';
+import { Flex, FLEX_COLORS as C, fmtCompact as fmt, truncateText as truncate, kpiTile, sentimentBar, deltaBadge, platformColor, urgencyLabel } from '../alerts/line';
 
 // Shared by the morning (07:00, since yesterday 00:00) and weekly (Mon 08:00,
 // last 7 days) LINE digests. Carousel order, built by the callers:
-//   Needs Attention (U4–U5 negatives) → Ride the Wave (Top 5 spiked by
-//   engagement, UGC only) → Performance (cross-brand KPIs) → one bubble per
+//   Needs Attention (urgency 4–5 negatives; omitted when empty) → Ride the
+//   Wave (morning: Top 5 spiked by engagement; weekly: Top 5 by views gained
+//   in the week; UGC only) → Performance (cross-brand KPIs) → one bubble per
 //   brand (MizuMi, Bomi, Gentle Colors) with KPIs + Top 5 posts.
 //
 // `winStart`/`priorStart` are constant SQL timestamp expressions picked by the
@@ -297,6 +298,33 @@ export async function fetchRideTheWave(winStart: string, limit = TOP_N): Promise
   return rows.map(toDigestPost);
 }
 
+/**
+ * Weekly "Ride the Wave" — own-brand TikTok UGC posts of any age (official
+ * excluded), all brands, ranked by views gained since `since` (viewGainSql).
+ */
+export async function fetchTopViewGainers(since: string, limit = TOP_N): Promise<DigestPost[]> {
+  const handles = await getOfficialTiktokHandles();
+  const rows = await socialQuery<Omit<PostRow, 'brand_id' | 'hashtags'> & { gained: string; is_new: boolean }>(
+    `SELECT * FROM (
+       SELECT b.name AS brand_name, 'tiktok' AS platform, COALESCE(tp.caption,'') AS caption,
+              tp.views::text, tp.likes::text, tp.engagement_rate::text, tp.author_handle,
+              ${TIKTOK_URL_SQL} AS post_url, false AS is_official,
+              (tp.posted_at >= ${since}) AS is_new,
+              ${viewGainSql('tp', since)} AS gained
+       FROM tiktok_posts tp JOIN brands b ON b.id = tp.brand_id
+       WHERE b.type = 'own'
+         -- only posts re-scraped in the window can have moved
+         AND tp.scraped_at >= ${since}
+         AND ${nonOfficialTiktokSql('tp', '$2')}
+     ) g
+     WHERE g.gained > 0
+     ORDER BY g.gained DESC
+     LIMIT $1`,
+    [limit, handles],
+  );
+  return rows.map((r) => ({ ...toDigestPost(r), gained: parseInt(r.gained, 10) || 0, isNew: r.is_new }));
+}
+
 export interface UrgentDigestComment {
   content: string;
   brand_name: string;
@@ -456,16 +484,16 @@ export function needsAttentionBubble(opts: DigestBubbleOpts, urgent: UrgentDiges
   const body: Flex[] = [];
 
   if (urgent.length === 0) {
-    body.push({ type: 'text', text: '✓ ไม่มีคอมเมนต์ลบระดับ U4–U5', size: 'sm', color: C.text, wrap: true });
+    body.push({ type: 'text', text: '✓ ไม่มีคอมเมนต์ลบที่ต้องรีบจัดการ', size: 'sm', color: C.text, wrap: true });
   } else {
-    body.push({ type: 'text', text: `🚨 คอมเมนต์ลบเร่งด่วน U4–U5 (${urgent.length})`, size: 'xxs', color: C.muted });
+    body.push({ type: 'text', text: `🚨 คอมเมนต์ลบที่ต้องรีบจัดการ (${urgent.length})`, size: 'xxs', color: C.muted });
     urgent.forEach((u, i) => {
       const box: Flex = {
         type: 'box', layout: 'vertical', spacing: 'xs', margin: i === 0 ? 'sm' : 'md',
         contents: [
           {
             type: 'text', size: 'xs', weight: 'bold', color: platformColor(u.platform, C.neg),
-            text: `U${u.urgency} · ${u.brand_name} · ${u.platform}`,
+            text: `${urgencyLabel(u.urgency)} · ${u.brand_name} · ${u.platform}`,
           },
           { type: 'text', text: truncate(u.content), size: 'xs', color: C.text, wrap: true, margin: 'xs' },
         ],
@@ -493,14 +521,14 @@ export function needsAttentionBubble(opts: DigestBubbleOpts, urgent: UrgentDiges
 }
 
 /** "📈 Ride the Wave" — Top 5 spiked UGC posts by engagement, any brand. Caller skips this bubble when the list is empty. */
-export function rideTheWaveBubble(posts: DigestPost[]): Flex {
+export function rideTheWaveBubble(posts: DigestPost[], basis = 'เรียงตาม engagement'): Flex {
   return {
     type: 'bubble', size: 'mega',
     header: {
       type: 'box', layout: 'vertical', backgroundColor: C.ques, paddingAll: '14px',
       contents: [
         { type: 'text', text: '📈 Ride the Wave', color: C.white, weight: 'bold', size: 'lg' },
-        { type: 'text', text: `Top ${posts.length} โพสต์กำลังมาแรง — เรียงตาม engagement`, color: '#fff7ed', size: 'xs', margin: 'sm', wrap: true },
+        { type: 'text', text: `Top ${posts.length} โพสต์กำลังมาแรง — ${basis}`, color: '#fff7ed', size: 'xs', margin: 'sm', wrap: true },
       ],
     },
     body: { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '14px', contents: postRows(posts, true) },
