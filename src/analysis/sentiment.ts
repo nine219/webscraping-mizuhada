@@ -71,6 +71,7 @@ interface CommentRow {
   post_id: string | null;
   post_url: string | null;
   author_handle: string | null;
+  is_recent: boolean;
 }
 
 function resolveCommentUrl(r: CommentRow): string | null {
@@ -204,6 +205,9 @@ ${JSON.stringify(comments.map((c) => ({ id: c.id, brand: c.brand_name, platform:
 // Max attempts = number of available keys (each attempt may rotate to a different key)
 const KEYS_RETRIES = 10;
 
+// Real-time urgent LINE alert only for comments posted within this window.
+const URGENT_ALERT_MAX_AGE_HOURS = 72;
+
 async function updateSentimentBatch(results: Map<number, SentimentResult>): Promise<void> {
   if (results.size === 0) return;
   const entries = [...results.entries()];
@@ -231,7 +235,8 @@ export async function classifyUnanalyzedComments(limit = 200, platform?: string)
   const rows = await query<CommentRow>(
     `SELECT sc.id, sc.content, sc.platform, sc.post_id, b.name AS brand_name, b.slug AS brand_slug, b.type AS brand_type,
             COALESCE(tp.post_url, twp.post_url) AS post_url,
-            COALESCE(tp.author_handle, twp.author_handle) AS author_handle
+            COALESCE(tp.author_handle, twp.author_handle) AS author_handle,
+            COALESCE(sc.published_at >= NOW() - interval '${URGENT_ALERT_MAX_AGE_HOURS} hours', false) AS is_recent
      FROM social_comments sc
      JOIN brands b ON b.id = sc.brand_id
      LEFT JOIN tiktok_posts tp ON sc.platform = 'tiktok' AND tp.brand_id = sc.brand_id AND tp.post_id = sc.post_id
@@ -262,7 +267,11 @@ export async function classifyUnanalyzedComments(limit = 200, platform?: string)
     const urgentRows: UrgentNegativeRow[] = [];
     for (const r of batch) {
       const res = results.get(r.id);
-      if (res?.sentiment === 'negative' && res.urgency != null && res.urgency >= 4 && r.brand_type === 'own') {
+      // is_recent: comment scraping is gated (a post's comments are first
+      // scraped once it crosses the view/comment thresholds), so a freshly
+      // classified comment can be weeks old — those still feed the dashboard
+      // and digests by published_at, but don't page anyone in real time.
+      if (res?.sentiment === 'negative' && res.urgency != null && res.urgency >= 4 && r.brand_type === 'own' && r.is_recent) {
         urgentRows.push({
           id: r.id, content: r.content, topic: res.topic, urgency: res.urgency,
           brand_name: r.brand_name, brand_slug: r.brand_slug, platform: r.platform,
